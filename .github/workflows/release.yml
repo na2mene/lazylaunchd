@@ -1,0 +1,72 @@
+# Manual release workflow.
+#
+# A human picks the bump type (patch / minor / major) at dispatch time, so a
+# breaking change can never sneak out as an automatic patch bump. The first
+# release (no tags yet) is always v0.1.0 regardless of the chosen bump.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump type'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+      dry_run:
+        description: 'Compute the next version without tagging or releasing'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute next version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          latest=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          if [ -z "$latest" ]; then
+            next="v0.1.0"
+          else
+            IFS=. read -r major minor patch <<< "${latest#v}"
+            case "$BUMP" in
+              major) next="v$((major+1)).0.0" ;;
+              minor) next="v${major}.$((minor+1)).0" ;;
+              patch) next="v${major}.${minor}.$((patch+1))" ;;
+            esac
+          fi
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          echo "latest: ${latest:-none} -> next: $next"
+
+      - name: Create and push tag
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.version.outputs.next }}"
+          git push origin "${{ steps.version.outputs.next }}"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run GoReleaser
+        if: ${{ !inputs.dry_run }}
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
