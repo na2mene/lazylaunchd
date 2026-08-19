@@ -1,6 +1,10 @@
 package launchd
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 // Kind is the launchd domain a job definition lives in.
 type Kind int
@@ -53,6 +57,67 @@ func (j Job) Running() bool { return j.StateKnown && j.PID > 0 }
 // IntervalBased reports whether the job runs on a StartInterval timer,
 // whose next fire time launchd does not expose.
 func (j Job) IntervalBased() bool { return j.interval > 0 }
+
+// CommandSeed renders the job's program as a single editable string for
+// the edit form. Wizard-generated shapes collapse back to the bare path.
+func (j Job) CommandSeed() string {
+	if len(j.Program) == 1 {
+		return j.Program[0]
+	}
+	if len(j.Program) == 2 && j.Program[0] == "/bin/sh" {
+		return j.Program[1]
+	}
+	// One-shot wrapper: peel off the self-removal tail and quoting.
+	if len(j.Program) == 3 && j.Program[0] == "/bin/sh" && j.Program[1] == "-c" {
+		cmd := j.Program[2]
+		if i := strings.Index(cmd, "; /bin/rm -f "); i > 0 {
+			cmd = cmd[:i]
+		}
+		return strings.Trim(cmd, "'")
+	}
+	return strings.Join(j.Program, " ")
+}
+
+// EditSeed maps the job's schedule back onto the wizard presets for
+// prefilling the edit form. ok is false for schedules the presets can't
+// express (weekday rules, mixed calendars, …).
+func (j Job) EditSeed() (kind int, value string, ok bool) {
+	if j.KeptAlive {
+		return SchedKeepAlive, "", true
+	}
+	if j.interval > 0 {
+		return SchedInterval, fmt.Sprintf("%d", (j.interval+59)/60), true
+	}
+	if len(j.calendar) == 1 {
+		e := j.calendar[0]
+		switch {
+		case e.month >= 0 && e.day >= 0 && e.weekday < 0:
+			return SchedOnce, fmt.Sprintf("%02d-%02d %02d:%02d", e.month, e.day, nonNegative(e.hour), nonNegative(e.minute)), true
+		case e.hour >= 0 && e.minute >= 0 && e.day < 0 && e.weekday < 0 && e.month < 0:
+			return SchedDaily, fmt.Sprintf("%02d:%02d", e.hour, e.minute), true
+		case e.minute >= 0 && e.hour < 0 && e.day < 0 && e.weekday < 0 && e.month < 0:
+			return SchedHourly, fmt.Sprintf("%d", e.minute), true
+		}
+		return 0, "", false
+	}
+	if len(j.calendar) > 1 {
+		minute, same := j.calendar[0].minute, true
+		hours := map[int]bool{}
+		for _, e := range j.calendar {
+			if e.minute != minute {
+				same = false
+			}
+			if e.hour >= 0 {
+				hours[e.hour] = true
+			}
+		}
+		if same && len(hours) == 24 {
+			return SchedHourly, fmt.Sprintf("%d", nonNegative(minute)), true
+		}
+		return 0, "", false
+	}
+	return SchedManual, "", true
+}
 
 // NextRun computes the next calendar fire time. It returns false for jobs
 // without a calendar schedule, for unloaded agents (they will not fire),

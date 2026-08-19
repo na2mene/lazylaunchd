@@ -1,10 +1,8 @@
 package ui
 
 import (
-	"bytes"
 	"fmt"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -128,14 +126,11 @@ const (
 	actRunFollow = iota
 	actRun
 	actToggle
-	actEdit
+	actEditForm
 	actDelete
 	actDetail
 	actFollow
 )
-
-// editorDoneMsg arrives when the external $EDITOR process exits.
-type editorDoneMsg struct{ err error }
 
 type menuEntry struct {
 	id    int
@@ -165,8 +160,6 @@ type Model struct {
 	logFrom    viewMode // where esc/q from the follow view returns to
 	logSize    int64
 	followSeq  int
-	editJob    launchd.Job // target of the in-flight $EDITOR session
-	editPrev   []byte      // plist content before the editor opened
 	wiz        *wizard
 	width      int
 	height     int
@@ -190,31 +183,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width, m.height = ws.Width, ws.Height
 		return m, nil
-	}
-	if ed, ok := msg.(editorDoneMsg); ok {
-		j := m.editJob
-		cur, readErr := os.ReadFile(j.PlistPath)
-		switch {
-		case ed.err != nil:
-			m.status = errBanner.Render(" ✗ editor: " + ed.err.Error() + " ")
-		case readErr == nil && bytes.Equal(cur, m.editPrev):
-			// :q! or closed without saving — don't lint, don't reload,
-			// don't restart a running job for nothing.
-			m.status = dimStyle.Render("no changes — nothing reloaded")
-		default:
-			if out, err := exec.Command("plutil", "-lint", j.PlistPath).CombinedOutput(); err != nil {
-				m.status = errBanner.Render(" ✗ edited but plist is INVALID — not reloaded: " + strings.TrimSpace(string(out)) + " ")
-			} else if j.Loaded {
-				if err := launchd.Reload(j); err != nil {
-					m.status = errBanner.Render(" ✗ edited but reload failed: " + err.Error() + " ")
-				} else {
-					m.status = okBanner.Render(" ✓ edited & reloaded: " + j.Label + " ")
-				}
-			} else {
-				m.status = okBanner.Render(" ✓ edited: " + j.Label + " (not loaded) ")
-			}
-		}
-		return m.rescan(), nil
 	}
 	if _, ok := msg.(clockTickMsg); ok {
 		return m, clockTick()
@@ -358,7 +326,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.status = errBanner.Render(" ✗ only user agents can be edited (system files need root) ")
 					break
 				}
-				return m.startEdit(j)
+				return m.startEditForm(j)
 			}
 		case "x":
 			if j, ok := m.curJob(); ok {
@@ -419,15 +387,15 @@ func buildMenu(j launchd.Job) []menuEntry {
 	if actionable && !hasLogs {
 		runFollow.note = "no log paths"
 	}
-	edit := menuEntry{id: actEdit, label: "Edit — open in $EDITOR, reload after save", ok: j.Kind == launchd.UserAgent}
-	if !edit.ok {
-		edit.note = "user agents only"
+	editForm := menuEntry{id: actEditForm, label: "Edit — form, like New job", ok: j.Kind == launchd.UserAgent}
+	if !editForm.ok {
+		editForm.note = "user agents only"
 	}
 	return []menuEntry{
 		runFollow,
 		{id: actRun, label: "Run now (stay here)", note: rootNote, ok: actionable},
 		toggle,
-		edit,
+		editForm,
 		del,
 		{id: actDetail, label: "Detail & logs", ok: true},
 		follow,
@@ -492,26 +460,12 @@ func (m Model) execMenu() (Model, tea.Cmd) {
 		m.mode = detailView
 		m.detailFrom = menuView
 		m.log, m.logSrc = tailLogFor(j)
-	case actEdit:
-		return m.startEdit(j)
+	case actEditForm:
+		return m.startEditForm(j)
 	case actFollow:
 		return m.startFollow(menuView)
 	}
 	return m, nil
-}
-
-// startEdit suspends the TUI and opens the plist in $EDITOR; the result is
-// validated and reloaded when the editor exits.
-func (m Model) startEdit(j launchd.Job) (Model, tea.Cmd) {
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = "vim"
-	}
-	m.editJob = j
-	m.editPrev, _ = os.ReadFile(j.PlistPath)
-	m.mode = listView
-	c := exec.Command(editor, j.PlistPath)
-	return m, tea.ExecProcess(c, func(err error) tea.Msg { return editorDoneMsg{err} })
 }
 
 // startFollow opens the tail -f view for the job under the cursor.

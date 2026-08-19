@@ -40,6 +40,7 @@ var schedOptions = []struct {
 }
 
 var confirmOptions = []string{"Save & load now", "Save only (load later with u)", "Cancel"}
+var editConfirmOptions = []string{"Save & apply (reload)", "Save only (apply later)", "Cancel"}
 
 type wizard struct {
 	step       int
@@ -64,6 +65,10 @@ type wizard struct {
 	preview     string
 	errMsg      string
 	completions []string
+
+	editing      bool
+	orig         launchd.Job
+	schedComplex bool // original schedule doesn't map onto the presets
 }
 
 func newWizard() *wizard {
@@ -112,6 +117,11 @@ func (w *wizard) hasValueStep() bool {
 
 func (w *wizard) prevStep() int {
 	switch w.step {
+	case wSchedType:
+		if w.editing {
+			return wScript // label is fixed while editing
+		}
+		return wLabel
 	case wLogDir:
 		if w.hasValueStep() {
 			return wSchedValue
@@ -286,6 +296,33 @@ func (m Model) startWizard() (Model, tea.Cmd) {
 	return m, textinput.Blink
 }
 
+// startEditForm opens the wizard prefilled with an existing job's values.
+func (m Model) startEditForm(j launchd.Job) (Model, tea.Cmd) {
+	m.mode = wizardView
+	m.status = ""
+	w := newWizard()
+	w.editing = true
+	w.orig = j
+	w.label = j.Label
+	w.scriptRaw = j.CommandSeed()
+	if kind, val, ok := j.EditSeed(); ok {
+		for i, opt := range schedOptions {
+			if opt.kind == kind {
+				w.schedSel = i
+			}
+		}
+		w.schedValRaw = val
+	} else {
+		w.schedComplex = true
+	}
+	if j.StdoutPath != "" {
+		w.logDirRaw = shortenHome(filepath.Dir(j.StdoutPath))
+	}
+	w.prepInput()
+	m.wiz = w
+	return m, textinput.Blink
+}
+
 func (m Model) updateWizard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	w := m.wiz
 	if key, ok := msg.(tea.KeyMsg); ok {
@@ -359,23 +396,34 @@ func (m Model) wizardEnter() (tea.Model, tea.Cmd) {
 			w.errMsg = "path is required"
 			return m, nil
 		}
-		path := expandTilde(raw)
-		info, err := os.Stat(path)
-		if err != nil {
-			w.errMsg = "file not found: " + path
-			return m, nil
-		}
-		if info.IsDir() {
-			w.errMsg = "that is a directory"
-			return m, nil
+		switch {
+		case w.editing && raw == w.orig.CommandSeed():
+			// Untouched: keep the exact original arguments.
+			w.program = w.orig.Program
+		default:
+			path := expandTilde(raw)
+			info, err := os.Stat(path)
+			switch {
+			case err == nil && info.IsDir():
+				w.errMsg = "that is a directory"
+				return m, nil
+			case err == nil && info.Mode()&0o111 != 0:
+				w.program = []string{path}
+			case err == nil:
+				w.program = []string{"/bin/sh", path} // not executable: run through sh
+			case w.editing && strings.Contains(raw, " "):
+				w.program = []string{"/bin/sh", "-c", raw} // free-form command
+			default:
+				w.errMsg = "file not found: " + path
+				return m, nil
+			}
 		}
 		w.scriptRaw = raw
-		if info.Mode()&0o111 != 0 {
-			w.program = []string{path}
+		if w.editing {
+			w.step = wSchedType // label is fixed while editing
 		} else {
-			w.program = []string{"/bin/sh", path} // not executable: run through sh
+			w.step = wLabel
 		}
-		w.step = wLabel
 		w.prepInput()
 
 	case wLabel:
@@ -423,7 +471,13 @@ func (m Model) wizardEnter() (tea.Model, tea.Cmd) {
 		}
 		w.logDirRaw = raw
 		w.logDir = expandTilde(raw)
-		data, err := w.newJob().BuildPlist()
+		var data []byte
+		var err error
+		if w.editing {
+			data, err = launchd.BuildEditedPlist(w.orig.PlistPath, w.newJob())
+		} else {
+			data, err = w.newJob().BuildPlist()
+		}
 		if err != nil {
 			w.errMsg = err.Error()
 			return m, nil
@@ -441,17 +495,27 @@ func (m Model) wizardEnter() (tea.Model, tea.Cmd) {
 		default:
 			load := w.confirmSel == 0
 			nj := w.newJob()
-			if err := nj.Create(load); err != nil {
+			var err error
+			verb := "created"
+			if w.editing {
+				err = launchd.SaveEdited(w.orig, nj, load)
+				verb = "updated"
+				if load {
+					verb = "updated & applied"
+				}
+			} else {
+				err = nj.Create(load)
+				if load {
+					verb = "created & loaded"
+				}
+			}
+			if err != nil {
 				w.errMsg = err.Error()
 				return m, nil
 			}
 			label := nj.Label
 			m.mode = listView
 			m.wiz = nil
-			verb := "created"
-			if load {
-				verb = "created & loaded"
-			}
 			m.status = okBanner.Render(" ✓ " + verb + ": " + label + " ")
 			m = m.rescan()
 			for i, j := range m.jobs {
@@ -512,15 +576,39 @@ func (m Model) wizardView() string {
 	w := m.wiz
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("New job") + "  " + dimStyle.Render(fmt.Sprintf("step %d/6", w.step+1)) + "\n\n")
+	title, total, stepNo := "New job", 6, w.step+1
+	if w.editing {
+		title, total = "Edit job", 5
+		if w.step >= wSchedType {
+			stepNo = w.step // the label step is skipped
+		}
+	}
+	b.WriteString(titleStyle.Render(title) + "  " + dimStyle.Render(fmt.Sprintf("step %d/%d", stepNo, total)) + "\n\n")
 
+	if w.editing {
+		// The existing configuration stays visible on every step, so you
+		// always know what you are changing from.
+		b.WriteString(sectionStyle.Render("  Current") + "\n")
+		cur := func(name, val string) {
+			b.WriteString(dimStyle.Render(fmt.Sprintf("  %s ", pad(name+":", 10))) + val + "\n")
+		}
+		cur("Label", w.orig.Label)
+		cur("Script", w.orig.CommandSeed())
+		cur("Schedule", w.orig.Schedule)
+		if w.orig.StdoutPath != "" {
+			cur("Logs", shortenHome(filepath.Dir(w.orig.StdoutPath)))
+		}
+		b.WriteString("\n")
+	}
+
+	var dn strings.Builder
 	done := func(name, val string) {
-		b.WriteString(dimStyle.Render(fmt.Sprintf("  %s %s\n", pad(name+":", 10), val)))
+		dn.WriteString(dimStyle.Render(fmt.Sprintf("  %s %s\n", pad(name+":", 10), val)))
 	}
 	if w.step > wScript {
 		done("Script", w.scriptRaw)
 	}
-	if w.step > wLabel {
+	if !w.editing && w.step > wLabel {
 		done("Label", w.label)
 	}
 	if w.step > wSchedType {
@@ -532,6 +620,12 @@ func (m Model) wizardView() string {
 	}
 	if w.step > wLogDir {
 		done("Logs", w.logDirRaw)
+	}
+	if dn.Len() > 0 {
+		if w.editing {
+			b.WriteString(sectionStyle.Render("  New") + "\n")
+		}
+		b.WriteString(dn.String())
 	}
 	b.WriteString("\n")
 
@@ -547,7 +641,11 @@ func (m Model) wizardView() string {
 		b.WriteString("  " + w.prefix + w.input.View() + "\n")
 		b.WriteString(dimStyle.Render("  letters, digits, . _ - only · e.g. backup-nightly") + "\n")
 	case wSchedType:
-		b.WriteString(sectionStyle.Render("When should it run?") + "\n\n")
+		b.WriteString(sectionStyle.Render("When should it run?") + "\n")
+		if w.editing && w.schedComplex {
+			b.WriteString(warnStyle.Render("current schedule is too complex for these presets — picking one replaces it") + "\n")
+		}
+		b.WriteString("\n")
 		for i, opt := range schedOptions {
 			if i == w.schedSel {
 				b.WriteString(cursorStyle.Render("▸ "+opt.label) + "\n")
@@ -568,9 +666,15 @@ func (m Model) wizardView() string {
 		b.WriteString("  " + w.input.View() + "\n")
 		b.WriteString(dimStyle.Render("  enter = accept this default") + "\n")
 	case wConfirm:
-		b.WriteString(sectionStyle.Render("Review — this will be written to "+shortenHome((launchd.NewJob{Label: w.label}).PlistPath())) + "\n\n")
+		verb := "written to"
+		opts := confirmOptions
+		if w.editing {
+			verb = "updated:"
+			opts = editConfirmOptions
+		}
+		b.WriteString(sectionStyle.Render("Review — this will be "+verb+" "+shortenHome((launchd.NewJob{Label: w.label}).PlistPath())) + "\n\n")
 		b.WriteString(menuBox.Render(strings.TrimRight(w.preview, "\n")) + "\n\n")
-		for i, opt := range confirmOptions {
+		for i, opt := range opts {
 			if i == w.confirmSel {
 				b.WriteString(cursorStyle.Render("▸ "+opt) + "\n")
 			} else {

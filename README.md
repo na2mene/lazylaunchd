@@ -49,7 +49,7 @@ lazylaunchd --dump   # plain table, for scripts / grep
 |-----------|---------------------------------------------------------------|
 | `j` / `k` | move                                                          |
 | `enter`   | action menu: Run now & follow log / Run now / Enable / Disable / Edit / Delete / Detail / Follow |
-| `e`       | edit plist in `$EDITOR`, validate & reload on save            |
+| `e`       | edit via form — the New-job wizard prefilled with current values |
 | `n`       | new-job wizard (also via the "+ New job" row at the top)      |
 | `d`       | job detail (program, schedule, log tail)                      |
 | `f`       | follow log, tail -f style (`t` switches stdout/stderr)        |
