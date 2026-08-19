@@ -22,3 +22,17 @@ checksum:
 
 changelog:
   use: github-native
+
+brews:
+  - repository:
+      owner: na2mene
+      name: homebrew-tap
+      token: '{{ .Env.TAP_GITHUB_TOKEN }}'
+    directory: Formula
+    homepage: https://github.com/na2mene/lazylaunchd
+    description: A lazygit-style TUI for macOS launchd
+    license: MIT
+    install: |
+      bin.install "lazylaunchd"
+    test: |
+      system "#{bin}/lazylaunchd", "--version"
