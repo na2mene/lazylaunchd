@@ -48,9 +48,10 @@ lazylaunchd --dump   # plain table, for scripts / grep
 | Key       | Action                                                        |
 |-----------|---------------------------------------------------------------|
 | `j` / `k` | move                                                          |
-| `enter`   | action menu: Run now / Enable / Disable / Delete / Detail     |
+| `enter`   | action menu: Run now & follow log / Run now / Enable / Disable / Delete / Detail / Follow |
 | `n`       | new-job wizard (also via the "+ New job" row at the top)      |
 | `d`       | job detail (program, schedule, log tail)                      |
+| `f`       | follow log, tail -f style (`t` switches stdout/stderr)        |
 | `x`       | shortcut: run now (loads first if needed, then kickstarts)    |
 | `u`       | shortcut: load / unload toggle (unload asks for confirmation) |
 | `r`       | refresh                                                       |
@@ -81,7 +82,7 @@ GUI domain. System daemons stay read-only — they belong to root.
 - [x] Run now / load / unload from the TUI
 - [x] New-job wizard: answer a few questions, get a valid plist, loaded
 - [x] Per-job "survives lid close?" indicator
-- [ ] Follow logs live
+- [x] Follow logs live
 - [x] Homebrew tap (`brew install na2mene/tap/lazylaunchd`)
 
 ## Name

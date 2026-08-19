@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -22,6 +23,16 @@ func refreshTick() tea.Cmd {
 	return tea.Tick(refreshInterval, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
+// followTickMsg drives the log-follow view. seq invalidates stale tick
+// chains left over from earlier follow sessions.
+type followTickMsg struct{ seq int }
+
+const followInterval = 500 * time.Millisecond
+
+func followTick(seq int) tea.Cmd {
+	return tea.Tick(followInterval, func(time.Time) tea.Msg { return followTickMsg{seq} })
+}
+
 var (
 	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
 	sectionStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
@@ -38,7 +49,42 @@ var (
 	pathLocStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("45"))
 	dirCandStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
 	warnStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	logTsStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("73"))
+	logErrStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 )
+
+var (
+	logAnsiRe  = regexp.MustCompile("\x1b\\[[0-9;]*m")
+	logErrRe   = regexp.MustCompile(`(?i)\b(error|fatal|panic|fail(ed|ure)?)\b`)
+	logWarnRe  = regexp.MustCompile(`(?i)\bwarn(ing)?\b`)
+	logDebugRe = regexp.MustCompile(`(?i)\b(debug|trace)\b`)
+	// ISO datetimes and `date`-style stamps (Wed Aug 19 13:29:24 JST 2026),
+	// anywhere in the line — real logs often prefix them with a message.
+	logTsRe = regexp.MustCompile(`(\d{4}[-/]\d{2}[-/]\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?|\w{3} \w{3} +\d{1,2} \d{2}:\d{2}:\d{2}( \w{3,4})? \d{4})`)
+	// Lines that are nothing but a separator rule.
+	logSepRe = regexp.MustCompile(`^[=\-─_*┄┈~]{4,}\s*$`)
+)
+
+// styleLogLine strips foreign ANSI codes, truncates to width, and applies
+// restrained highlighting: level-colored lines, teal leading timestamps.
+func styleLogLine(l string, width int) string {
+	l = logAnsiRe.ReplaceAllString(l, "")
+	l = trunc(l, width)
+	switch {
+	case logErrRe.MatchString(l):
+		return logErrStyle.Render(l)
+	case logWarnRe.MatchString(l):
+		return warnStyle.Render(l)
+	case logDebugRe.MatchString(l):
+		return dimStyle.Render(l)
+	case logSepRe.MatchString(l):
+		return dimStyle.Render(l)
+	}
+	if loc := logTsRe.FindStringIndex(l); loc != nil {
+		return l[:loc[0]] + logTsStyle.Render(l[loc[0]:loc[1]]) + l[loc[1]:]
+	}
+	return l
+}
 
 // sleepImpact answers the key question for a Mac used as an always-on box:
 // will this job actually do its work given the current power/sleep state?
@@ -65,13 +111,16 @@ const (
 	detailView
 	menuView
 	wizardView
+	logView
 )
 
 const (
-	actRun = iota
+	actRunFollow = iota
+	actRun
 	actToggle
 	actDelete
 	actDetail
+	actFollow
 )
 
 type menuEntry struct {
@@ -99,6 +148,9 @@ type Model struct {
 	menu       []menuEntry
 	menuCursor int
 	detailFrom viewMode // where esc/q from the detail view returns to
+	logFrom    viewMode // where esc/q from the follow view returns to
+	logSize    int64
+	followSeq  int
 	wiz        *wizard
 	width      int
 	height     int
@@ -122,6 +174,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width, m.height = ws.Width, ws.Height
 		return m, nil
+	}
+	if ft, ok := msg.(followTickMsg); ok {
+		if m.mode == logView && ft.seq == m.followSeq {
+			m = m.reloadFollow()
+			return m, followTick(ft.seq)
+		}
+		return m, nil // stale chain: stop re-arming
 	}
 	if _, ok := msg.(tickMsg); ok {
 		// Refresh data only — never cursor, mode, or scroll — so navigation
@@ -159,6 +218,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.mode == logView {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc", "q":
+				m.mode = m.logFrom
+			case "t":
+				if j, ok := m.curJob(); ok && j.StdoutPath != "" && j.StderrPath != "" && j.StdoutPath != j.StderrPath {
+					if m.logSrc == "stdout" {
+						m.logSrc = "stderr"
+					} else {
+						m.logSrc = "stdout"
+					}
+					m.logSize = -1
+					m = m.reloadFollow()
+				}
+			}
+			return m, nil
+		}
 		if m.mode == menuView {
 			switch msg.String() {
 			case "ctrl+c":
@@ -174,7 +252,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.menuCursor--
 				}
 			case "enter":
-				m = m.execMenu()
+				return m.execMenu()
 			}
 			return m, nil
 		}
@@ -226,6 +304,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.detailFrom = listView
 				m.log, m.logSrc = tailLogFor(j)
 			}
+		case "f":
+			if m.mode == listView || m.mode == detailView {
+				return m.startFollow(m.mode)
+			}
 		case "x":
 			if j, ok := m.curJob(); ok {
 				if err := launchd.RunNow(j); err != nil {
@@ -276,29 +358,49 @@ func buildMenu(j launchd.Job) []menuEntry {
 	if !del.ok {
 		del.note = "user agents only"
 	}
+	hasLogs := j.StdoutPath != "" || j.StderrPath != ""
+	follow := menuEntry{id: actFollow, label: "Follow log (tail -f)", ok: hasLogs}
+	if !follow.ok {
+		follow.note = "no log paths"
+	}
+	runFollow := menuEntry{id: actRunFollow, label: "Run now & follow log", ok: actionable && hasLogs, note: rootNote}
+	if actionable && !hasLogs {
+		runFollow.note = "no log paths"
+	}
 	return []menuEntry{
-		{id: actRun, label: "Run now", note: rootNote, ok: actionable},
+		runFollow,
+		{id: actRun, label: "Run now (stay here)", note: rootNote, ok: actionable},
 		toggle,
 		del,
 		{id: actDetail, label: "Detail & logs", ok: true},
+		follow,
 	}
 }
 
-func (m Model) execMenu() Model {
+func (m Model) execMenu() (Model, tea.Cmd) {
 	j, ok := m.curJob()
 	if !ok || m.menuCursor >= len(m.menu) {
 		m.mode = listView
-		return m
+		return m, nil
 	}
 	entry := m.menu[m.menuCursor]
 
 	if !entry.ok {
 		m.mode = listView
-		m.status = errBanner.Render(" ✗ system daemons need root — use sudo launchctl ")
-		return m
+		m.status = errBanner.Render(" ✗ " + entry.label + ": " + entry.note + " ")
+		return m, nil
 	}
 
 	switch entry.id {
+	case actRunFollow:
+		if err := launchd.RunNow(j); err != nil {
+			m.mode = listView
+			m.status = errBanner.Render(" ✗ " + err.Error() + " ")
+			m = m.rescan()
+			return m, nil
+		}
+		m = m.rescan()
+		return m.startFollow(listView)
 	case actRun:
 		m.mode = listView
 		if err := launchd.RunNow(j); err != nil {
@@ -333,8 +435,86 @@ func (m Model) execMenu() Model {
 		m.mode = detailView
 		m.detailFrom = menuView
 		m.log, m.logSrc = tailLogFor(j)
+	case actFollow:
+		return m.startFollow(menuView)
 	}
+	return m, nil
+}
+
+// startFollow opens the tail -f view for the job under the cursor.
+func (m Model) startFollow(from viewMode) (Model, tea.Cmd) {
+	j, ok := m.curJob()
+	if !ok {
+		return m, nil
+	}
+	if j.StdoutPath == "" && j.StderrPath == "" {
+		m.status = errBanner.Render(" ✗ no log paths defined for " + j.Label + " ")
+		return m, nil
+	}
+	m.logSrc = "stdout"
+	if j.StdoutPath == "" {
+		m.logSrc = "stderr"
+	}
+	m.mode = logView
+	m.logFrom = from
+	m.logSize = -1
+	m.followSeq++
+	m = m.reloadFollow()
+	return m, followTick(m.followSeq)
+}
+
+// followPath is the log file the follow view currently streams.
+func (m Model) followPath() string {
+	j, ok := m.curJob()
+	if !ok {
+		return ""
+	}
+	if m.logSrc == "stderr" {
+		return j.StderrPath
+	}
+	return j.StdoutPath
+}
+
+// reloadFollow rereads the tail, skipping the read when the size is unchanged.
+func (m Model) reloadFollow() Model {
+	path := m.followPath()
+	if fi, err := os.Stat(path); err == nil {
+		if fi.Size() == m.logSize {
+			return m
+		}
+		m.logSize = fi.Size()
+	}
+	m.log = tailFile(path, 300)
 	return m
+}
+
+// logPanel renders the full-screen tail -f view.
+func (m Model) logPanel() string {
+	j, ok := m.curJob()
+	if !ok {
+		return m.list()
+	}
+	var b strings.Builder
+	b.WriteString(titleStyle.Render(j.Label) + "  " + okStyle.Render("● following") + dimStyle.Render(" · "+m.logSrc+" · 0.5s") + "\n")
+	b.WriteString(dimStyle.Render(shortenHome(m.followPath())) + "\n")
+	b.WriteString(dimStyle.Render(strings.Repeat("─", max(10, m.width-2))) + "\n")
+
+	avail := m.height - 5
+	if avail < 3 {
+		avail = 3
+	}
+	lines := m.log
+	if len(lines) > avail {
+		lines = lines[len(lines)-avail:]
+	}
+	if len(lines) == 0 {
+		b.WriteString(dimStyle.Render("(empty — waiting for output…)") + "\n")
+	}
+	for _, l := range lines {
+		b.WriteString(styleLogLine(l, m.width-1) + "\n")
+	}
+	b.WriteString("\n" + helpStyle.Render("t stdout/stderr · esc back"))
+	return b.String()
 }
 
 // rescan refreshes jobs, power state, and (in detail view) the log tail.
@@ -366,6 +546,8 @@ func (m Model) View() string {
 		return m.menuPanel()
 	case wizardView:
 		return m.wizardView()
+	case logView:
+		return m.logPanel()
 	default:
 		return m.list()
 	}
@@ -479,7 +661,7 @@ func (m Model) list() string {
 	}
 
 	b.WriteString("\n" + m.statusLine())
-	b.WriteString(helpStyle.Render("enter actions (run/enable/disable) · n new job · d detail · j/k move · r refresh · q quit"))
+	b.WriteString(helpStyle.Render("enter actions (run/enable/disable) · n new job · d detail · f follow log · j/k move · q quit"))
 	return b.String()
 }
 
@@ -525,7 +707,7 @@ func (m Model) detail() string {
 		b.WriteString("\n" + sectionStyle.Render(fmt.Sprintf("─ log tail (%s) ", m.logSrc)) +
 			dimStyle.Render(strings.Repeat("─", max(0, m.width-16-len(m.logSrc)))) + "\n")
 		for _, l := range m.log {
-			b.WriteString(dimStyle.Render(trunc(l, m.width-2)) + "\n")
+			b.WriteString(styleLogLine(l, m.width-2) + "\n")
 		}
 	} else if j.StdoutPath != "" || j.StderrPath != "" {
 		b.WriteString("\n" + dimStyle.Render("(log file empty or unreadable)") + "\n")
@@ -592,7 +774,7 @@ func tailFile(path string, n int) []string {
 	if err != nil || info.Size() == 0 {
 		return nil
 	}
-	const window = 32 * 1024
+	const window = 128 * 1024
 	offset := int64(0)
 	if info.Size() > window {
 		offset = info.Size() - window
