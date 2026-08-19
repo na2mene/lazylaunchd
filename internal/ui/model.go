@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -21,6 +22,14 @@ const refreshInterval = 2 * time.Second
 
 func refreshTick() tea.Cmd {
 	return tea.Tick(refreshInterval, func(time.Time) tea.Msg { return tickMsg{} })
+}
+
+// clockTickMsg re-renders once a second so countdowns tick; it fetches
+// nothing — remaining time is computed at render.
+type clockTickMsg struct{}
+
+func clockTick() tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg { return clockTickMsg{} })
 }
 
 // followTickMsg drives the log-follow view. seq invalidates stale tick
@@ -118,10 +127,14 @@ const (
 	actRunFollow = iota
 	actRun
 	actToggle
+	actEdit
 	actDelete
 	actDetail
 	actFollow
 )
+
+// editorDoneMsg arrives when the external $EDITOR process exits.
+type editorDoneMsg struct{ err error }
 
 type menuEntry struct {
 	id    int
@@ -151,6 +164,7 @@ type Model struct {
 	logFrom    viewMode // where esc/q from the follow view returns to
 	logSize    int64
 	followSeq  int
+	editJob    launchd.Job // target of the in-flight $EDITOR session
 	wiz        *wizard
 	width      int
 	height     int
@@ -168,12 +182,35 @@ func New(jobs []launchd.Job, pw power.Status) Model {
 	return Model{jobs: jobs, power: pw}
 }
 
-func (m Model) Init() tea.Cmd { return refreshTick() }
+func (m Model) Init() tea.Cmd { return tea.Batch(refreshTick(), clockTick()) }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width, m.height = ws.Width, ws.Height
 		return m, nil
+	}
+	if ed, ok := msg.(editorDoneMsg); ok {
+		j := m.editJob
+		switch {
+		case ed.err != nil:
+			m.status = errBanner.Render(" ✗ editor: " + ed.err.Error() + " ")
+		default:
+			if out, err := exec.Command("plutil", "-lint", j.PlistPath).CombinedOutput(); err != nil {
+				m.status = errBanner.Render(" ✗ edited but plist is INVALID — not reloaded: " + strings.TrimSpace(string(out)) + " ")
+			} else if j.Loaded {
+				if err := launchd.Reload(j); err != nil {
+					m.status = errBanner.Render(" ✗ edited but reload failed: " + err.Error() + " ")
+				} else {
+					m.status = okBanner.Render(" ✓ edited & reloaded: " + j.Label + " ")
+				}
+			} else {
+				m.status = okBanner.Render(" ✓ edited: " + j.Label + " (not loaded) ")
+			}
+		}
+		return m.rescan(), nil
+	}
+	if _, ok := msg.(clockTickMsg); ok {
+		return m, clockTick()
 	}
 	if ft, ok := msg.(followTickMsg); ok {
 		if m.mode == logView && ft.seq == m.followSeq {
@@ -308,6 +345,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.mode == listView || m.mode == detailView {
 				return m.startFollow(m.mode)
 			}
+		case "e":
+			if j, ok := m.curJob(); ok && (m.mode == listView || m.mode == detailView) {
+				if j.Kind != launchd.UserAgent {
+					m.status = errBanner.Render(" ✗ only user agents can be edited (system files need root) ")
+					break
+				}
+				return m.startEdit(j)
+			}
 		case "x":
 			if j, ok := m.curJob(); ok {
 				if err := launchd.RunNow(j); err != nil {
@@ -367,10 +412,15 @@ func buildMenu(j launchd.Job) []menuEntry {
 	if actionable && !hasLogs {
 		runFollow.note = "no log paths"
 	}
+	edit := menuEntry{id: actEdit, label: "Edit — open in $EDITOR, reload after save", ok: j.Kind == launchd.UserAgent}
+	if !edit.ok {
+		edit.note = "user agents only"
+	}
 	return []menuEntry{
 		runFollow,
 		{id: actRun, label: "Run now (stay here)", note: rootNote, ok: actionable},
 		toggle,
+		edit,
 		del,
 		{id: actDetail, label: "Detail & logs", ok: true},
 		follow,
@@ -435,10 +485,25 @@ func (m Model) execMenu() (Model, tea.Cmd) {
 		m.mode = detailView
 		m.detailFrom = menuView
 		m.log, m.logSrc = tailLogFor(j)
+	case actEdit:
+		return m.startEdit(j)
 	case actFollow:
 		return m.startFollow(menuView)
 	}
 	return m, nil
+}
+
+// startEdit suspends the TUI and opens the plist in $EDITOR; the result is
+// validated and reloaded when the editor exits.
+func (m Model) startEdit(j launchd.Job) (Model, tea.Cmd) {
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "vim"
+	}
+	m.editJob = j
+	m.mode = listView
+	c := exec.Command(editor, j.PlistPath)
+	return m, tea.ExecProcess(c, func(err error) tea.Msg { return editorDoneMsg{err} })
 }
 
 // startFollow opens the tail -f view for the job under the cursor.
@@ -629,8 +694,12 @@ func (m Model) list() string {
 	}
 	end := min(len(rows), start+avail)
 
-	labelW := min(44, max(24, m.width/3))
-	schedW := min(32, max(18, m.width/4))
+	// Column budget: fixed state/next columns, the rest split between
+	// label and schedule so narrow terminals degrade gracefully.
+	const stateW, nextW = 22, 17
+	rest := m.width - stateW - nextW - 12 // icons + gaps
+	labelW := clamp(rest*55/100, 20, 48)
+	schedW := clamp(rest-labelW, 14, 34)
 
 	for _, r := range rows[start:end] {
 		if r.job == -1 {
@@ -647,11 +716,20 @@ func (m Model) list() string {
 		}
 		j := m.jobs[r.job]
 		icon, _ := sleepImpact(j, m.power)
-		line := fmt.Sprintf("  %s %s %s  %s  %s",
+		next := ""
+		if t, ok := j.NextRun(time.Now()); ok {
+			if d := time.Until(t); d < 24*time.Hour {
+				next = fmt.Sprintf("→%s (%s)", t.Format("15:04"), shortDur(d))
+			} else {
+				next = "→" + t.Format("01-02 15:04")
+			}
+		}
+		line := fmt.Sprintf("  %s %s %s  %s  %s  %s",
 			icon,
 			stateDot(j),
-			pad(trunc(j.Label, labelW), labelW),
+			pad(truncMid(j.Label, labelW), labelW),
 			pad(trunc(j.Schedule, schedW), schedW),
+			pad(next, nextW),
 			stateText(j),
 		)
 		if r.job == m.cursor-1 {
@@ -695,6 +773,11 @@ func (m Model) detail() string {
 	field("Plist", shortenHome(j.PlistPath))
 	field("Program", trunc(strings.Join(j.Program, " "), m.width-14))
 	field("Schedule", j.Schedule)
+	if t, ok := j.NextRun(time.Now()); ok {
+		field("Next run", fmt.Sprintf("%s (in %s)", t.Format("2006-01-02 15:04"), humanDur(time.Until(t))))
+	} else if j.IntervalBased() {
+		field("Next run", dimStyle.Render("interval timer — counts from its last fire; launchd doesn't expose the next time"))
+	}
 	sleepIcon, sleepNote := sleepImpact(j, m.power)
 	field("Sleep", sleepIcon+" "+sleepNote)
 	field("Stdout", shortenHome(j.StdoutPath))
@@ -808,11 +891,35 @@ func trunc(s string, w int) string {
 	return s[:w-1] + "…"
 }
 
+// pad aligns by display width, not bytes — labels and the next-run arrow
+// contain multibyte runes.
 func pad(s string, w int) string {
-	if len(s) >= w {
+	d := w - lipgloss.Width(s)
+	if d <= 0 {
 		return s
 	}
-	return s + strings.Repeat(" ", w-len(s))
+	return s + strings.Repeat(" ", d)
+}
+
+// truncMid keeps head and tail — for reverse-DNS labels both the vendor
+// prefix and the job name at the end carry meaning.
+func truncMid(s string, w int) string {
+	if w <= 3 || len(s) <= w {
+		return s
+	}
+	head := (w - 1) / 2
+	tail := w - 1 - head
+	return s[:head] + "…" + s[len(s)-tail:]
+}
+
+func clamp(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 func min64(a, b int64) int64 {
@@ -820,4 +927,44 @@ func min64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+// shortDur is a ticking countdown for the list column: 29:59, or 3:04:59
+// with an hour part.
+func shortDur(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	total := int(d.Seconds())
+	h := total / 3600
+	mnt := (total % 3600) / 60
+	s := total % 60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, mnt, s)
+	}
+	return fmt.Sprintf("%02d:%02d", mnt, s)
+}
+
+func humanDur(d time.Duration) string {
+	d = d.Round(time.Minute)
+	if d < time.Minute {
+		return "under 1m"
+	}
+	days := int(d.Hours()) / 24
+	h := int(d.Hours()) % 24
+	mnt := int(d.Minutes()) % 60
+	out := ""
+	if days > 0 {
+		out += fmt.Sprintf("%dd", days)
+	}
+	if h > 0 {
+		out += fmt.Sprintf("%dh", h)
+	}
+	if mnt > 0 && days == 0 {
+		out += fmt.Sprintf("%dm", mnt)
+	}
+	if out == "" {
+		out = "0m"
+	}
+	return out
 }

@@ -3,6 +3,7 @@ package launchd
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 func humanizeSchedule(raw rawPlist) string {
@@ -75,7 +76,7 @@ func calendarSummary(v interface{}) string {
 		case e.hour >= 0:
 			return fmt.Sprintf("daily at %s", hhmm(e.hour, e.minute))
 		case e.minute >= 0:
-			return fmt.Sprintf("hourly at :%02d", e.minute)
+			return fmt.Sprintf("every hour at xx:%02d", e.minute)
 		default:
 			return "1 calendar entry"
 		}
@@ -93,10 +94,10 @@ func calendarSummary(v interface{}) string {
 		}
 	}
 	if sameMinute && len(hours) == 24 {
-		return fmt.Sprintf("every hour at :%02d", nonNegative(minute))
+		return fmt.Sprintf("every hour at xx:%02d", nonNegative(minute))
 	}
 	if sameMinute && len(hours) == len(entries) {
-		return fmt.Sprintf("%d times/day at :%02d", len(entries), nonNegative(minute))
+		return fmt.Sprintf("%d times/day at xx:%02d", len(entries), nonNegative(minute))
 	}
 	return fmt.Sprintf("%d calendar entries", len(entries))
 }
@@ -153,6 +154,47 @@ func nonNegative(n int) int {
 		return 0
 	}
 	return n
+}
+
+// nextCalendar finds the next time matching a StartCalendarInterval entry.
+// launchd ANDs the specified components; missing ones are wildcards.
+func nextCalendar(e calEntry, now time.Time) time.Time {
+	start := now.Add(time.Minute).Truncate(time.Minute)
+	for d := 0; d < 400; d++ {
+		day := start.AddDate(0, 0, d)
+		hFrom, mFrom := 0, 0
+		if d == 0 {
+			hFrom, mFrom = start.Hour(), start.Minute()
+		} else {
+			day = time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
+		}
+		if e.month >= 0 && int(day.Month()) != e.month {
+			continue
+		}
+		if e.day >= 0 && day.Day() != e.day {
+			continue
+		}
+		if e.weekday >= 0 && int(day.Weekday()) != e.weekday%7 {
+			continue
+		}
+		for h := hFrom; h < 24; h++ {
+			if e.hour >= 0 && h != e.hour {
+				continue
+			}
+			from := 0
+			if h == hFrom && d == 0 {
+				from = mFrom
+			}
+			if e.minute >= 0 {
+				if e.minute >= from {
+					return time.Date(day.Year(), day.Month(), day.Day(), h, e.minute, 0, 0, day.Location())
+				}
+				continue
+			}
+			return time.Date(day.Year(), day.Month(), day.Day(), h, from, 0, 0, day.Location())
+		}
+	}
+	return time.Time{}
 }
 
 func weekdayName(wd int) string {

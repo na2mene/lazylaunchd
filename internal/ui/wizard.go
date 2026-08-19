@@ -31,7 +31,7 @@ var schedOptions = []struct {
 	kind  int
 	hint  string
 }{
-	{"Hourly at :MM", launchd.SchedHourly, "minute 0-59, e.g. 30"},
+	{"Hourly at xx:MM", launchd.SchedHourly, "minute 0-59, e.g. 30"},
 	{"Daily at HH:MM", launchd.SchedDaily, "e.g. 09:30"},
 	{"Every N minutes", launchd.SchedInterval, "minutes, e.g. 15"},
 	{"Always on (KeepAlive)", launchd.SchedKeepAlive, ""},

@@ -95,6 +95,16 @@ func Delete(j Job) error {
 	return nil
 }
 
+// Reload boots the job out and back in so an edited plist takes effect —
+// launchd never picks up plist changes on its own.
+func Reload(j Job) error {
+	if j.Kind == Daemon {
+		return fmt.Errorf("system daemons need root: sudo launchctl")
+	}
+	_ = launchctl("bootout", guiDomain()+"/"+j.Label) // may already be unloaded
+	return launchctl("bootstrap", guiDomain(), j.PlistPath)
+}
+
 // RunNow starts the job immediately, loading it first if needed.
 func RunNow(j Job) error {
 	if j.Kind == Daemon {
