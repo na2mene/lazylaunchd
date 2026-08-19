@@ -20,6 +20,8 @@ var (
 	runningStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	helpStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	okStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	confirmStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("229")).Background(lipgloss.Color("124"))
 )
 
 type viewMode int
@@ -29,15 +31,23 @@ const (
 	detailView
 )
 
+type confirmState struct {
+	prompt string
+	done   string
+	run    func() error
+}
+
 type Model struct {
-	jobs   []launchd.Job
-	power  power.Status
-	cursor int
-	mode   viewMode
-	log    []string
-	logSrc string
-	width  int
-	height int
+	jobs    []launchd.Job
+	power   power.Status
+	cursor  int
+	mode    viewMode
+	log     []string
+	logSrc  string
+	status  string
+	confirm *confirmState
+	width   int
+	height  int
 }
 
 func New(jobs []launchd.Job, pw power.Status) Model {
@@ -51,6 +61,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 	case tea.KeyMsg:
+		if m.confirm != nil {
+			switch msg.String() {
+			case "y", "Y":
+				c := m.confirm
+				m.confirm = nil
+				if err := c.run(); err != nil {
+					m.status = errStyle.Render(err.Error())
+				} else {
+					m.status = okStyle.Render(c.done)
+				}
+				m = m.rescan()
+			case "ctrl+c":
+				return m, tea.Quit
+			default:
+				m.confirm = nil
+				m.status = dimStyle.Render("canceled")
+			}
+			return m, nil
+		}
+		m.status = ""
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
@@ -79,20 +109,57 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode = detailView
 				m.log, m.logSrc = tailLogFor(m.jobs[m.cursor])
 			}
+		case "x":
+			if len(m.jobs) > 0 {
+				j := m.jobs[m.cursor]
+				if err := launchd.RunNow(j); err != nil {
+					m.status = errStyle.Render(err.Error())
+				} else {
+					m.status = okStyle.Render("started: " + j.Label)
+				}
+				m = m.rescan()
+			}
+		case "u":
+			if len(m.jobs) > 0 {
+				j := m.jobs[m.cursor]
+				switch {
+				case j.Kind == launchd.Daemon:
+					m.status = errStyle.Render("system daemons need root — use sudo launchctl")
+				case j.Loaded:
+					m.confirm = &confirmState{
+						prompt: fmt.Sprintf("unload %s? this stops the job until you load it again (y/N)", j.Label),
+						done:   "unloaded: " + j.Label,
+						run:    func() error { return launchd.Unload(j) },
+					}
+				default:
+					if err := launchd.Load(j); err != nil {
+						m.status = errStyle.Render(err.Error())
+					} else {
+						m.status = okStyle.Render("loaded: " + j.Label)
+					}
+					m = m.rescan()
+				}
+			}
 		case "r":
-			if jobs, err := launchd.Scan(); err == nil {
-				m.jobs = jobs
-			}
-			m.power = power.Read()
-			if m.cursor >= len(m.jobs) {
-				m.cursor = max(0, len(m.jobs)-1)
-			}
-			if m.mode == detailView && len(m.jobs) > 0 {
-				m.log, m.logSrc = tailLogFor(m.jobs[m.cursor])
-			}
+			m = m.rescan()
 		}
 	}
 	return m, nil
+}
+
+// rescan refreshes jobs, power state, and (in detail view) the log tail.
+func (m Model) rescan() Model {
+	if jobs, err := launchd.Scan(); err == nil {
+		m.jobs = jobs
+	}
+	m.power = power.Read()
+	if m.cursor >= len(m.jobs) {
+		m.cursor = max(0, len(m.jobs)-1)
+	}
+	if m.mode == detailView && len(m.jobs) > 0 {
+		m.log, m.logSrc = tailLogFor(m.jobs[m.cursor])
+	}
+	return m
 }
 
 func (m Model) View() string {
@@ -130,7 +197,7 @@ func (m Model) list() string {
 	}
 
 	// Simple scrolling: keep the cursor row visible.
-	avail := m.height - 5
+	avail := m.height - 6
 	if avail < 3 {
 		avail = 3
 	}
@@ -167,8 +234,20 @@ func (m Model) list() string {
 		b.WriteString(line + "\n")
 	}
 
-	b.WriteString("\n" + helpStyle.Render("j/k move · enter detail · r refresh · q quit"))
+	b.WriteString("\n" + m.statusLine())
+	b.WriteString(helpStyle.Render("j/k move · enter detail · x run now · u load/unload · r refresh · q quit"))
 	return b.String()
+}
+
+// statusLine renders the pending confirmation or the last action result.
+func (m Model) statusLine() string {
+	if m.confirm != nil {
+		return confirmStyle.Render(" "+m.confirm.prompt+" ") + "\n"
+	}
+	if m.status != "" {
+		return m.status + "\n"
+	}
+	return ""
 }
 
 func (m Model) detail() string {
@@ -203,7 +282,8 @@ func (m Model) detail() string {
 		b.WriteString("\n" + dimStyle.Render("(log file empty or unreadable)") + "\n")
 	}
 
-	b.WriteString("\n" + helpStyle.Render("esc/q back · r refresh"))
+	b.WriteString("\n" + m.statusLine())
+	b.WriteString(helpStyle.Render("esc/q back · x run now · u load/unload · r refresh"))
 	return b.String()
 }
 

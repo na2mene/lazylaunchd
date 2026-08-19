@@ -22,7 +22,7 @@ System Agents (2)
 System Daemons (1)
   ◌ com.example.checkin          every 15m                system domain (root)
 
-j/k move · enter detail · r refresh · q quit
+j/k move · enter detail · x run now · u load/unload · r refresh · q quit
 ```
 
 ## Install
@@ -40,12 +40,20 @@ lazylaunchd --dump   # plain table, for scripts / grep
 
 ### Keys
 
-| Key       | Action                                  |
-|-----------|-----------------------------------------|
-| `j` / `k` | move                                    |
-| `enter`   | job detail (program, schedule, log tail) |
-| `r`       | refresh                                 |
-| `esc`/`q` | back / quit                             |
+| Key       | Action                                                     |
+|-----------|------------------------------------------------------------|
+| `j` / `k` | move                                                       |
+| `enter`   | job detail (program, schedule, log tail)                   |
+| `x`       | run now (loads first if needed, then kickstarts)           |
+| `u`       | load / unload toggle (unload asks for confirmation)        |
+| `r`       | refresh                                                    |
+| `esc`/`q` | back / quit                                                |
+
+### Recommended alias
+
+```sh
+alias lzl='lazylaunchd'
+```
 
 ## What it reads
 
@@ -55,11 +63,12 @@ lazylaunchd --dump   # plain table, for scripts / grep
 - `launchctl list` — PID / last exit status
 - `pmset -g` — power source and sleep-prevention assertions
 
-Read-only in v0: it never modifies, loads, or unloads anything.
+Job control (`x` / `u`) uses `launchctl kickstart / bootstrap / bootout` on your own
+GUI domain. System daemons stay read-only — they belong to root.
 
 ## Roadmap
 
-- [ ] Run now / load / unload from the TUI
+- [x] Run now / load / unload from the TUI
 - [ ] New-job wizard: answer a few questions, get a valid plist, loaded
 - [ ] Per-job "survives lid close?" indicator
 - [ ] Follow logs live
