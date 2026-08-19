@@ -65,6 +65,7 @@ type Model struct {
 	confirm    *confirmState
 	menu       []menuEntry
 	menuCursor int
+	detailFrom viewMode // where esc/q from the detail view returns to
 	width      int
 	height     int
 }
@@ -124,12 +125,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "q":
 			if m.mode == detailView {
-				m.mode = listView
+				m.mode = m.detailFrom
 				return m, nil
 			}
 			return m, tea.Quit
 		case "esc":
-			m.mode = listView
+			if m.mode == detailView {
+				m.mode = m.detailFrom
+			}
 		case "j", "down":
 			if m.mode == listView && m.cursor < len(m.jobs)-1 {
 				m.cursor++
@@ -151,6 +154,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "d":
 			if len(m.jobs) > 0 {
 				m.mode = detailView
+				m.detailFrom = listView
 				m.log, m.logSrc = tailLogFor(m.jobs[m.cursor])
 			}
 		case "x":
@@ -249,6 +253,7 @@ func (m Model) execMenu() Model {
 		m = m.rescan()
 	case actDetail:
 		m.mode = detailView
+		m.detailFrom = menuView
 		m.log, m.logSrc = tailLogFor(j)
 	}
 	return m
