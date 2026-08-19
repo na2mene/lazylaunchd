@@ -15,6 +15,11 @@ verdict, and every job row carries its own sleep-impact indicator:
 - `!` on battery — closing the lid stops scheduled runs
 - `·` not schedule-driven; sleep doesn't matter
 
+Each row also carries its last five observed runs (`··●●✗`, newest right), and a
+failed run posts a macOS notification. launchd keeps no run history itself, so
+lazylaunchd records what it observes while open
+(`~/Library/Application Support/lazylaunchd/history.json`).
+
 ```
 lazylaunchd  ⚡ AC power · sleep prevented (caffeinate, powerd) — jobs run 24/7, even with the lid closed
 
@@ -84,6 +89,7 @@ GUI domain. System daemons stay read-only — they belong to root.
 - [x] New-job wizard: answer a few questions, get a valid plist, loaded
 - [x] Per-job "survives lid close?" indicator
 - [x] Follow logs live
+- [x] Run history (●●✗) and failure notifications
 - [x] Homebrew tap (`brew install na2mene/tap/lazylaunchd`)
 
 ## Name

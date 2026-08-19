@@ -68,7 +68,8 @@ type wizard struct {
 
 	editing      bool
 	orig         launchd.Job
-	schedComplex bool // original schedule doesn't map onto the presets
+	logSeed      string // log dir as prefilled; unchanged → keep original paths
+	schedComplex bool   // original schedule doesn't map onto the presets
 }
 
 func newWizard() *wizard {
@@ -275,7 +276,7 @@ func completePath(val string) (string, []string) {
 }
 
 func (w *wizard) newJob() launchd.NewJob {
-	return launchd.NewJob{
+	nj := launchd.NewJob{
 		Label:       w.label,
 		Program:     w.program,
 		SchedKind:   w.schedKind,
@@ -287,6 +288,13 @@ func (w *wizard) newJob() launchd.NewJob {
 		StdoutPath:  filepath.Join(w.logDir, "stdout.log"),
 		StderrPath:  filepath.Join(w.logDir, "stderr.log"),
 	}
+	// Editing with the log dir untouched: keep the original file names —
+	// never silently rename someone's log files.
+	if w.editing && w.logSeed != "" && w.logDirRaw == w.logSeed {
+		nj.StdoutPath = w.orig.StdoutPath
+		nj.StderrPath = w.orig.StderrPath
+	}
+	return nj
 }
 
 func (m Model) startWizard() (Model, tea.Cmd) {
@@ -317,6 +325,7 @@ func (m Model) startEditForm(j launchd.Job) (Model, tea.Cmd) {
 	}
 	if j.StdoutPath != "" {
 		w.logDirRaw = shortenHome(filepath.Dir(j.StdoutPath))
+		w.logSeed = w.logDirRaw
 	}
 	w.prepInput()
 	m.wiz = w

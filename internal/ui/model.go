@@ -128,7 +128,6 @@ const (
 	actToggle
 	actEditForm
 	actDelete
-	actDetail
 	actFollow
 )
 
@@ -161,6 +160,7 @@ type Model struct {
 	logSize    int64
 	followSeq  int
 	wiz        *wizard
+	hist       *launchd.History
 	width      int
 	height     int
 }
@@ -174,7 +174,9 @@ func (m Model) curJob() (launchd.Job, bool) {
 }
 
 func New(jobs []launchd.Job, pw power.Status) Model {
-	return Model{jobs: jobs, power: pw}
+	m := Model{jobs: jobs, power: pw, hist: launchd.LoadHistory()}
+	m.hist.Observe(jobs) // baseline snapshot
+	return m
 }
 
 func (m Model) Init() tea.Cmd { return tea.Batch(refreshTick(), clockTick()) }
@@ -379,7 +381,7 @@ func buildMenu(j launchd.Job) []menuEntry {
 		del.note = "user agents only"
 	}
 	hasLogs := j.StdoutPath != "" || j.StderrPath != ""
-	follow := menuEntry{id: actFollow, label: "Follow log (tail -f)", ok: hasLogs}
+	follow := menuEntry{id: actFollow, label: "Log (tail -f)", ok: hasLogs}
 	if !follow.ok {
 		follow.note = "no log paths"
 	}
@@ -397,7 +399,6 @@ func buildMenu(j launchd.Job) []menuEntry {
 		toggle,
 		editForm,
 		del,
-		{id: actDetail, label: "Detail & logs", ok: true},
 		follow,
 	}
 }
@@ -456,10 +457,6 @@ func (m Model) execMenu() (Model, tea.Cmd) {
 			done:   "deleted (plist in Trash): " + j.Label,
 			run:    func() error { return launchd.Delete(j) },
 		}
-	case actDetail:
-		m.mode = detailView
-		m.detailFrom = menuView
-		m.log, m.logSrc = tailLogFor(j)
 	case actEditForm:
 		return m.startEditForm(j)
 	case actFollow:
@@ -545,11 +542,18 @@ func (m Model) logPanel() string {
 }
 
 // rescan refreshes jobs, power state, and (in detail view) the log tail.
+// It also feeds the run-history observer and fires failure notifications.
 func (m Model) rescan() Model {
 	if jobs, err := launchd.Scan(); err == nil {
 		m.jobs = jobs
 	}
 	m.power = power.Read()
+	if m.hist != nil {
+		for _, f := range m.hist.Observe(m.jobs) {
+			launchd.Notify("lazylaunchd", fmt.Sprintf("%s failed (exit %d)", f.Label, f.Exit))
+			m.status = errBanner.Render(fmt.Sprintf(" ✗ %s failed (exit %d) ", f.Label, f.Exit))
+		}
+	}
 	if m.cursor > len(m.jobs) {
 		m.cursor = len(m.jobs)
 	}
@@ -580,7 +584,7 @@ func (m Model) View() string {
 	}
 }
 
-// menuPanel shows the selectable actions for the current job.
+// menuPanel shows the job's full information plus the selectable actions.
 func (m Model) menuPanel() string {
 	j, ok := m.curJob()
 	if !ok {
@@ -589,7 +593,8 @@ func (m Model) menuPanel() string {
 	var b strings.Builder
 
 	b.WriteString(titleStyle.Render(j.Label) + "\n")
-	b.WriteString(dimStyle.Render(j.Schedule) + "  " + stateText(j) + "\n\n")
+	b.WriteString(dimStyle.Render(j.Kind.String()) + "  " + stateText(j) + "\n\n")
+	b.WriteString(m.jobInfo(j) + "\n")
 
 	var items strings.Builder
 	for i, e := range m.menu {
@@ -656,10 +661,10 @@ func (m Model) list() string {
 	}
 	end := min(len(rows), start+avail)
 
-	// Column budget: fixed state/next columns, the rest split between
-	// label and schedule so narrow terminals degrade gracefully.
-	const stateW, nextW = 22, 17
-	rest := m.width - stateW - nextW - 12 // icons + gaps
+	// Column budget: fixed state/next/history columns, the rest split
+	// between label and schedule so narrow terminals degrade gracefully.
+	const stateW, nextW, histW = 22, 17, 5
+	rest := m.width - stateW - nextW - histW - 14 // icons + gaps
 	labelW := clamp(rest*55/100, 20, 48)
 	schedW := clamp(rest-labelW, 14, 34)
 
@@ -686,12 +691,13 @@ func (m Model) list() string {
 				next = "→" + t.Format("01-02 15:04")
 			}
 		}
-		line := fmt.Sprintf("  %s %s %s  %s  %s  %s",
+		line := fmt.Sprintf("  %s %s %s  %s  %s  %s  %s",
 			icon,
 			stateDot(j),
 			pad(truncMid(j.Label, labelW), labelW),
 			pad(trunc(j.Schedule, schedW), schedW),
 			pad(next, nextW),
+			m.histCell(j.Label),
 			stateText(j),
 		)
 		if r.job == m.cursor-1 {
@@ -703,6 +709,75 @@ func (m Model) list() string {
 	b.WriteString("\n" + m.statusLine())
 	b.WriteString(helpStyle.Render("enter actions (run/enable/disable) · n new job · d detail · f follow log · j/k move · q quit"))
 	return b.String()
+}
+
+// jobInfo renders the job's fields — shared by the detail view and the
+// action menu, so the facts stay visible while choosing an action.
+func (m Model) jobInfo(j launchd.Job) string {
+	var b strings.Builder
+	field := func(name, val string) {
+		if val == "" {
+			val = dimStyle.Render("—")
+		}
+		b.WriteString(fmt.Sprintf("%s %s\n", sectionStyle.Render(pad(name+":", 10)), val))
+	}
+	field("Plist", shortenHome(j.PlistPath))
+	field("Program", trunc(strings.Join(j.Program, " "), m.width-14))
+	field("Schedule", j.Schedule)
+	if t, ok := j.NextRun(time.Now()); ok {
+		field("Next run", fmt.Sprintf("%s (in %s)", t.Format("2006-01-02 15:04"), humanDur(time.Until(t))))
+	} else if j.IntervalBased() {
+		field("Next run", dimStyle.Render("interval timer — counts from its last fire; launchd doesn't expose the next time"))
+	}
+	sleepIcon, sleepNote := sleepImpact(j, m.power)
+	field("Sleep", sleepIcon+" "+sleepNote)
+	if runs := m.hist.Runs(j.Label); len(runs) > 0 {
+		last := runs
+		if len(last) > 5 {
+			last = last[len(last)-5:]
+		}
+		var parts []string
+		for i := len(last) - 1; i >= 0; i-- {
+			r := last[i]
+			mark := okStyle.Render("● ok")
+			if r.Exit != 0 {
+				mark = errStyle.Render(fmt.Sprintf("✗ exit %d", r.Exit))
+			}
+			parts = append(parts, r.At.Format("01-02 15:04")+" "+mark)
+		}
+		field("History", strings.Join(parts, dimStyle.Render("  ·  ")))
+	} else if j.StateKnown {
+		field("History", dimStyle.Render("no runs observed yet — recorded while lazylaunchd is open"))
+	}
+	field("Stdout", shortenHome(j.StdoutPath))
+	field("Stderr", shortenHome(j.StderrPath))
+	if j.ParseError != "" {
+		field("Error", errStyle.Render(j.ParseError))
+	}
+	return b.String()
+}
+
+// histCell renders the last five observed runs, newest on the right.
+func (m Model) histCell(label string) string {
+	if m.hist == nil {
+		return strings.Repeat(" ", 5)
+	}
+	runs := m.hist.Runs(label)
+	if len(runs) > 5 {
+		runs = runs[len(runs)-5:]
+	}
+	var sb strings.Builder
+	for i := 0; i < 5-len(runs); i++ {
+		sb.WriteString(dimStyle.Render("·"))
+	}
+	for _, r := range runs {
+		if r.Exit == 0 {
+			sb.WriteString(okStyle.Render("●"))
+		} else {
+			sb.WriteString(errStyle.Render("✗"))
+		}
+	}
+	return sb.String()
 }
 
 // statusLine renders the pending confirmation or the last action result.
@@ -725,28 +800,7 @@ func (m Model) detail() string {
 
 	b.WriteString(titleStyle.Render(j.Label) + "\n")
 	b.WriteString(dimStyle.Render(j.Kind.String()) + "  " + stateText(j) + "\n\n")
-
-	field := func(name, val string) {
-		if val == "" {
-			val = dimStyle.Render("—")
-		}
-		b.WriteString(fmt.Sprintf("%s %s\n", sectionStyle.Render(pad(name+":", 10)), val))
-	}
-	field("Plist", shortenHome(j.PlistPath))
-	field("Program", trunc(strings.Join(j.Program, " "), m.width-14))
-	field("Schedule", j.Schedule)
-	if t, ok := j.NextRun(time.Now()); ok {
-		field("Next run", fmt.Sprintf("%s (in %s)", t.Format("2006-01-02 15:04"), humanDur(time.Until(t))))
-	} else if j.IntervalBased() {
-		field("Next run", dimStyle.Render("interval timer — counts from its last fire; launchd doesn't expose the next time"))
-	}
-	sleepIcon, sleepNote := sleepImpact(j, m.power)
-	field("Sleep", sleepIcon+" "+sleepNote)
-	field("Stdout", shortenHome(j.StdoutPath))
-	field("Stderr", shortenHome(j.StderrPath))
-	if j.ParseError != "" {
-		field("Error", errStyle.Render(j.ParseError))
-	}
+	b.WriteString(m.jobInfo(j))
 
 	if len(m.log) > 0 {
 		b.WriteString("\n" + sectionStyle.Render(fmt.Sprintf("─ log tail (%s) ", m.logSrc)) +
