@@ -91,6 +91,8 @@ func (j Job) EditSeed() (kind int, value string, ok bool) {
 	if len(j.calendar) == 1 {
 		e := j.calendar[0]
 		switch {
+		case e.weekday >= 0 && e.hour >= 0 && e.minute >= 0 && e.day < 0 && e.month < 0:
+			return SchedWeekly, fmt.Sprintf("%s %02d:%02d", strings.ToLower(weekdayName(e.weekday)), e.hour, e.minute), true
 		case e.month >= 0 && e.day >= 0 && e.weekday < 0:
 			return SchedOnce, fmt.Sprintf("%02d-%02d %02d:%02d", e.month, e.day, nonNegative(e.hour), nonNegative(e.minute)), true
 		case e.hour >= 0 && e.minute >= 0 && e.day < 0 && e.weekday < 0 && e.month < 0:

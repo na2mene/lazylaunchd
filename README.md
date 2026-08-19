@@ -60,6 +60,8 @@ lazylaunchd --dump   # plain table, for scripts / grep
 | `f`       | follow log, tail -f style (`t` switches stdout/stderr)        |
 | `x`       | shortcut: run now (loads first if needed, then kickstarts)    |
 | `u`       | shortcut: load / unload toggle (unload asks for confirmation) |
+| `/`       | filter jobs by label (live, esc clears)                       |
+| `s`       | toggle sort: grouped ⇄ by next run                            |
 | `r`       | refresh                                                       |
 | `esc`/`q` | back / quit                                                   |
 

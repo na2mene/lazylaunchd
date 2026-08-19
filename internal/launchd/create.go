@@ -18,6 +18,7 @@ const (
 	SchedKeepAlive
 	SchedManual
 	SchedOnce // fire at one specific date, then remove itself
+	SchedWeekly
 )
 
 // shq single-quotes a string for /bin/sh.
@@ -30,10 +31,11 @@ type NewJob struct {
 	Label      string
 	Program    []string
 	SchedKind  int
-	Minute     int // SchedHourly, SchedDaily, SchedCalendar
-	Hour       int // SchedDaily, SchedCalendar
-	Month      int // SchedCalendar
-	Day        int // SchedCalendar
+	Minute     int // SchedHourly, SchedDaily, SchedWeekly, SchedOnce
+	Hour       int // SchedDaily, SchedWeekly, SchedOnce
+	Month      int // SchedOnce
+	Day        int // SchedOnce
+	Weekday    int // SchedWeekly (0=Sunday)
 	IntervalMin int // SchedInterval
 	StdoutPath string
 	StderrPath string
@@ -62,6 +64,8 @@ func (n NewJob) BuildPlist() ([]byte, error) {
 		d["StartCalendarInterval"] = map[string]interface{}{"Minute": n.Minute}
 	case SchedDaily:
 		d["StartCalendarInterval"] = map[string]interface{}{"Hour": n.Hour, "Minute": n.Minute}
+	case SchedWeekly:
+		d["StartCalendarInterval"] = map[string]interface{}{"Weekday": n.Weekday, "Hour": n.Hour, "Minute": n.Minute}
 	case SchedOnce:
 		d["StartCalendarInterval"] = map[string]interface{}{
 			"Month": n.Month, "Day": n.Day, "Hour": n.Hour, "Minute": n.Minute,

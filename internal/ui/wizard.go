@@ -33,6 +33,7 @@ var schedOptions = []struct {
 }{
 	{"Hourly at xx:MM", launchd.SchedHourly, "minute 0-59, e.g. 30"},
 	{"Daily at HH:MM", launchd.SchedDaily, "e.g. 09:30"},
+	{"Weekly on a day at HH:MM", launchd.SchedWeekly, "day + time, e.g. mon 09:30"},
 	{"Every N minutes", launchd.SchedInterval, "minutes, e.g. 15"},
 	{"Always on (KeepAlive)", launchd.SchedKeepAlive, ""},
 	{"Manual only", launchd.SchedManual, ""},
@@ -59,6 +60,7 @@ type wizard struct {
 	hour        int
 	month       int
 	day         int
+	weekday     int
 	intervalMin int
 	logDirRaw   string
 	logDir      string
@@ -284,6 +286,7 @@ func (w *wizard) newJob() launchd.NewJob {
 		Hour:        w.hour,
 		Month:       w.month,
 		Day:         w.day,
+		Weekday:     w.weekday,
 		IntervalMin: w.intervalMin,
 		StdoutPath:  filepath.Join(w.logDir, "stdout.log"),
 		StderrPath:  filepath.Join(w.logDir, "stderr.log"),
@@ -558,6 +561,18 @@ func (w *wizard) parseSchedValue(raw string) error {
 			return fmt.Errorf("enter a time like 09:30")
 		}
 		w.hour, w.minute = h, mi
+	case launchd.SchedWeekly:
+		mch := regexp.MustCompile(`(?i)^(sun|mon|tue|wed|thu|fri|sat) (\d{1,2}):(\d{2})$`).FindStringSubmatch(raw)
+		if mch == nil {
+			return fmt.Errorf("enter like mon 09:30 (sun/mon/tue/wed/thu/fri/sat)")
+		}
+		days := map[string]int{"sun": 0, "mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6}
+		h, _ := strconv.Atoi(mch[2])
+		mi, _ := strconv.Atoi(mch[3])
+		if h > 23 || mi > 59 {
+			return fmt.Errorf("enter like mon 09:30")
+		}
+		w.weekday, w.hour, w.minute = days[strings.ToLower(mch[1])], h, mi
 	case launchd.SchedInterval:
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 1 {

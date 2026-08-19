@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -161,16 +162,50 @@ type Model struct {
 	followSeq  int
 	wiz        *wizard
 	hist       *launchd.History
+	filter     string
+	filtering  bool
+	sortNext   bool
+	topSel     int // selected button on the top bar (cursor row 0)
 	width      int
 	height     int
 }
 
-// curJob returns the job under the cursor. Cursor 0 is the "+ New job" row.
+// visible returns indices into m.jobs after filtering and sorting.
+func (m Model) visible() []int {
+	idx := make([]int, 0, len(m.jobs))
+	f := strings.ToLower(m.filter)
+	for i, j := range m.jobs {
+		if f == "" || strings.Contains(strings.ToLower(j.Label), f) {
+			idx = append(idx, i)
+		}
+	}
+	if m.sortNext {
+		now := time.Now()
+		sort.SliceStable(idx, func(a, b int) bool {
+			ta, oka := m.jobs[idx[a]].NextRun(now)
+			tb, okb := m.jobs[idx[b]].NextRun(now)
+			switch {
+			case oka && okb:
+				return ta.Before(tb)
+			case oka:
+				return true
+			case okb:
+				return false
+			}
+			return m.jobs[idx[a]].Label < m.jobs[idx[b]].Label
+		})
+	}
+	return idx
+}
+
+// curJob returns the job under the cursor. Cursor 0 is the "+ New job" row;
+// positions 1..n walk the filtered/sorted visible list.
 func (m Model) curJob() (launchd.Job, bool) {
-	if m.cursor == 0 || m.cursor > len(m.jobs) {
+	vis := m.visible()
+	if m.cursor == 0 || m.cursor > len(vis) {
 		return launchd.Job{}, false
 	}
-	return m.jobs[m.cursor-1], true
+	return m.jobs[vis[m.cursor-1]], true
 }
 
 func New(jobs []launchd.Job, pw power.Status) Model {
@@ -270,6 +305,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.filtering {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				m.filtering = false
+				m.filter = ""
+			case "enter":
+				m.filtering = false
+			case "backspace":
+				if len(m.filter) > 0 {
+					r := []rune(m.filter)
+					m.filter = string(r[:len(r)-1])
+				}
+			default:
+				if msg.Type == tea.KeyRunes {
+					m.filter += string(msg.Runes)
+				}
+			}
+			if m.cursor > len(m.visible()) {
+				m.cursor = len(m.visible())
+			}
+			return m, nil
+		}
 		m.status = ""
 		switch msg.String() {
 		case "ctrl+c":
@@ -283,19 +342,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc":
 			if m.mode == detailView {
 				m.mode = m.detailFrom
+			} else if m.filter != "" {
+				m.filter = ""
+			}
+		case "/":
+			if m.mode == listView {
+				m.filtering = true
+				m.filter = ""
+				m.cursor = 0
+			}
+		case "s":
+			if m.mode == listView {
+				m.sortNext = !m.sortNext
 			}
 		case "j", "down":
-			if m.mode == listView && m.cursor < len(m.jobs) {
+			if m.mode == listView && m.cursor < len(m.visible()) {
 				m.cursor++
 			}
 		case "k", "up":
 			if m.mode == listView && m.cursor > 0 {
 				m.cursor--
 			}
+		case "h", "left":
+			if m.mode == listView && m.cursor == 0 && m.topSel > 0 {
+				m.topSel--
+			}
+		case "l", "right":
+			if m.mode == listView && m.cursor == 0 && m.topSel < 2 {
+				m.topSel++
+			}
 		case "g":
 			m.cursor = 0
 		case "G":
-			m.cursor = len(m.jobs)
+			m.cursor = len(m.visible())
 		case "n":
 			if m.mode == listView {
 				return m.startWizard()
@@ -305,7 +384,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 			if m.cursor == 0 {
-				return m.startWizard()
+				switch m.topSel {
+				case 1:
+					m.filtering = true
+					m.filter = ""
+				case 2:
+					m.sortNext = !m.sortNext
+				default:
+					return m.startWizard()
+				}
+				break
 			}
 			if j, ok := m.curJob(); ok {
 				m.mode = menuView
@@ -554,8 +642,8 @@ func (m Model) rescan() Model {
 			m.status = errBanner.Render(fmt.Sprintf(" ✗ %s failed (exit %d) ", f.Label, f.Exit))
 		}
 	}
-	if m.cursor > len(m.jobs) {
-		m.cursor = len(m.jobs)
+	if m.cursor > len(m.visible()) {
+		m.cursor = len(m.visible())
 	}
 	if m.mode == detailView {
 		if j, ok := m.curJob(); ok {
@@ -630,28 +718,52 @@ func (m Model) list() string {
 		warnStyle.Render("~") + dimStyle.Render(" skipped/paused while asleep · ") +
 		errStyle.Render("!") + dimStyle.Render(" stops on battery lid-close") + "\n\n")
 
-	rows := []row{{job: -2}} // "+ New job" row at the top
-	lastKind := launchd.Kind(-1)
-	counts := map[launchd.Kind]int{}
-	for _, j := range m.jobs {
-		counts[j.Kind]++
+	usedLines := 3 // title + legend + blank
+	if m.filtering {
+		b.WriteString(confirmStyle.Render(" / "+m.filter+"▌ ") + helpStyle.Render("  type to filter · enter keep · esc clear") + "\n")
+		usedLines++
+	} else if m.filter != "" {
+		b.WriteString(dimStyle.Render("  filter: "+m.filter+" (esc to clear)") + "\n")
+		usedLines++
 	}
-	for i, j := range m.jobs {
-		if j.Kind != lastKind {
-			rows = append(rows, row{header: fmt.Sprintf("%s (%d)", j.Kind, counts[j.Kind]), job: -1})
-			lastKind = j.Kind
+
+	vis := m.visible()
+	rows := []row{{job: -2}} // "+ New job" row at the top
+	if m.sortNext {
+		rows = append(rows, row{header: fmt.Sprintf("By next run (%d) — s to restore groups", len(vis)), job: -1})
+		for _, i := range vis {
+			rows = append(rows, row{job: i})
 		}
-		rows = append(rows, row{job: i})
+	} else {
+		counts := map[launchd.Kind]int{}
+		for _, i := range vis {
+			counts[m.jobs[i].Kind]++
+		}
+		lastKind := launchd.Kind(-1)
+		for _, i := range vis {
+			j := m.jobs[i]
+			if j.Kind != lastKind {
+				rows = append(rows, row{header: fmt.Sprintf("%s (%d)", j.Kind, counts[j.Kind]), job: -1})
+				lastKind = j.Kind
+			}
+			rows = append(rows, row{job: i})
+		}
+	}
+
+	// The cursor addresses the visible list; map it to the underlying index.
+	target := -2
+	if m.cursor > 0 && m.cursor <= len(vis) {
+		target = vis[m.cursor-1]
 	}
 
 	// Simple scrolling: keep the cursor row visible.
-	avail := m.height - 7
+	avail := m.height - usedLines - 4
 	if avail < 3 {
 		avail = 3
 	}
 	cursorRow := 0
 	for ri, r := range rows {
-		if (r.job == -2 && m.cursor == 0) || (r.job >= 0 && r.job == m.cursor-1) {
+		if r.job == target {
 			cursorRow = ri
 		}
 	}
@@ -674,11 +786,17 @@ func (m Model) list() string {
 			continue
 		}
 		if r.job == -2 {
-			line := "    + New job… "
-			if m.cursor == 0 {
-				line = cursorStyle.Render("▸" + line[1:])
+			seg := func(i int, label string) string {
+				if target == -2 && m.topSel == i {
+					return cursorStyle.Render(" ▸ " + label + " ")
+				}
+				return "   " + label + " "
 			}
-			b.WriteString(line + "\n")
+			sortLabel := "Sort: groups (s)"
+			if m.sortNext {
+				sortLabel = "Sort: next run (s)"
+			}
+			b.WriteString(" " + seg(0, "+ New job (n)") + seg(1, "Search (/)") + seg(2, sortLabel) + "\n")
 			continue
 		}
 		j := m.jobs[r.job]
@@ -700,14 +818,14 @@ func (m Model) list() string {
 			m.histCell(j.Label),
 			stateText(j),
 		)
-		if r.job == m.cursor-1 {
+		if r.job == target {
 			line = cursorStyle.Render("▸" + line[1:])
 		}
 		b.WriteString(line + "\n")
 	}
 
 	b.WriteString("\n" + m.statusLine())
-	b.WriteString(helpStyle.Render("enter actions (run/enable/disable) · n new job · d detail · f follow log · j/k move · q quit"))
+	b.WriteString(helpStyle.Render("enter info & actions · n new · e edit · f log · / filter · s sort by next run · j/k · q quit"))
 	return b.String()
 }
 
