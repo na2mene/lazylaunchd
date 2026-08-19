@@ -434,8 +434,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.status = errStyle.Render("system daemons need root — use sudo launchctl")
 				case j.Loaded:
 					m.confirm = &confirmState{
-						prompt: fmt.Sprintf("unload %s? this stops the job until you load it again (y/N)", j.Label),
-						done:   "unloaded: " + j.Label,
+						prompt: fmt.Sprintf("disable %s? stops it now and keeps it off after restarts (y/N)", j.Label),
+						done:   "disabled: " + j.Label,
 						run:    func() error { return launchd.Unload(j) },
 					}
 				default:
@@ -460,9 +460,9 @@ func buildMenu(j launchd.Job) []menuEntry {
 	if !actionable {
 		rootNote = "needs root"
 	}
-	toggle := menuEntry{id: actToggle, label: "Enable — load, schedule resumes", ok: actionable, note: rootNote}
+	toggle := menuEntry{id: actToggle, label: "Enable — start now, runs at login again", ok: actionable, note: rootNote}
 	if j.Loaded {
-		toggle.label = "Disable — unload, schedule stops"
+		toggle.label = "Disable — stop now, stays off after restart"
 	}
 	del := menuEntry{id: actDelete, label: "Delete — unload & move plist + logs to Trash", ok: j.Kind == launchd.UserAgent}
 	if !del.ok {
@@ -526,9 +526,9 @@ func (m Model) execMenu() (Model, tea.Cmd) {
 	case actToggle:
 		m.mode = listView
 		var err error
-		verb := "enabled"
+		verb := "enabled (runs at login again)"
 		if j.Loaded {
-			verb = "disabled"
+			verb = "disabled (stays off after restart)"
 			err = launchd.Unload(j)
 		} else {
 			err = launchd.Load(j)
@@ -943,6 +943,8 @@ func stateDot(j launchd.Job) string {
 		return errStyle.Render("●")
 	case j.StateKnown && j.Loaded:
 		return "●"
+	case j.StateKnown && j.Disabled:
+		return warnStyle.Render("⊘")
 	case j.StateKnown:
 		return dimStyle.Render("○")
 	default:
@@ -958,6 +960,8 @@ func stateText(j launchd.Job) string {
 		return errStyle.Render(fmt.Sprintf("loaded · last exit %d", *j.LastExit))
 	case j.StateKnown && j.Loaded:
 		return "loaded"
+	case j.StateKnown && j.Disabled:
+		return warnStyle.Render("⊘ disabled")
 	case j.StateKnown:
 		return dimStyle.Render("not loaded")
 	default:

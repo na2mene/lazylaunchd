@@ -23,21 +23,26 @@ func launchctl(args ...string) error {
 	return nil
 }
 
-// Load bootstraps the job into the current user's GUI domain.
+// Load clears any persistent disable override and bootstraps the job into
+// the current user's GUI domain.
 func Load(j Job) error {
 	if j.Kind == Daemon {
 		return fmt.Errorf("system daemons need root: sudo launchctl bootstrap system %s", j.PlistPath)
 	}
+	_ = launchctl("enable", guiDomain()+"/"+j.Label) // a disabled service refuses to bootstrap
 	return launchctl("bootstrap", guiDomain(), j.PlistPath)
 }
 
-// Unload boots the job out of the current user's GUI domain,
-// stopping its process if one is running.
+// Unload stops the job now AND records a persistent disable override —
+// bootout alone would resurrect the job at the next login.
 func Unload(j Job) error {
 	if j.Kind == Daemon {
 		return fmt.Errorf("system daemons need root: sudo launchctl bootout system/%s", j.Label)
 	}
-	return launchctl("bootout", guiDomain()+"/"+j.Label)
+	if err := launchctl("bootout", guiDomain()+"/"+j.Label); err != nil {
+		return err
+	}
+	return launchctl("disable", guiDomain()+"/"+j.Label)
 }
 
 // moveToTrash moves a file into ~/.Trash, deduplicating the name if needed.
@@ -76,6 +81,9 @@ func Delete(j Job) error {
 	if err := moveToTrash(j.PlistPath); err != nil {
 		return err
 	}
+	// Clear any disable override: a stale entry would mysteriously block a
+	// future job created under the same label.
+	_ = launchctl("enable", guiDomain()+"/"+j.Label)
 	logs := []string{j.StdoutPath}
 	if j.StderrPath != "" && j.StderrPath != j.StdoutPath {
 		logs = append(logs, j.StderrPath)
@@ -102,6 +110,7 @@ func Reload(j Job) error {
 		return fmt.Errorf("system daemons need root: sudo launchctl")
 	}
 	_ = launchctl("bootout", guiDomain()+"/"+j.Label) // may already be unloaded
+	_ = launchctl("enable", guiDomain()+"/"+j.Label)  // applying implies activating
 	return launchctl("bootstrap", guiDomain(), j.PlistPath)
 }
 

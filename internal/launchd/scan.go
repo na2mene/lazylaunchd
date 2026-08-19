@@ -35,6 +35,7 @@ func Scan() ([]Job, error) {
 	}
 
 	states := readStates()
+	disabled := readDisabled()
 
 	var jobs []Job
 	for _, d := range dirs {
@@ -50,6 +51,7 @@ func Scan() ([]Job, error) {
 			job := parse(path, d.kind)
 			if d.kind != Daemon {
 				job.StateKnown = true
+				job.Disabled = disabled[job.Label]
 				if st, ok := states[job.Label]; ok {
 					job.Loaded = true
 					job.PID = st.pid

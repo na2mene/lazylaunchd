@@ -59,7 +59,7 @@ lazylaunchd --dump   # plain table, for scripts / grep
 | `d`       | job detail (program, schedule, log tail)                      |
 | `f`       | follow log, tail -f style (`t` switches stdout/stderr)        |
 | `x`       | shortcut: run now (loads first if needed, then kickstarts)    |
-| `u`       | shortcut: load / unload toggle (unload asks for confirmation) |
+| `u`       | shortcut: enable / disable toggle — disable stays off across restarts |
 | `/`       | filter jobs by label (live, esc clears)                       |
 | `s`       | toggle sort: grouped ⇄ by next run                            |
 | `r`       | refresh                                                       |
@@ -83,7 +83,10 @@ alias lzl='lazylaunchd'
 - `pmset -g` — power source and sleep-prevention assertions
 
 Job control (`x` / `u`) uses `launchctl kickstart / bootstrap / bootout` on your own
-GUI domain. System daemons stay read-only — they belong to root.
+GUI domain. Disable also writes a persistent `launchctl disable` override, so a
+disabled job stays off across logins and reboots (plain bootout would resurrect it);
+Enable clears the override and bootstraps. System daemons stay read-only — they
+belong to root.
 
 ## Roadmap
 

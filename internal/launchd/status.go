@@ -2,9 +2,25 @@ package launchd
 
 import (
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 )
+
+// readDisabled parses `launchctl print-disabled` for the GUI domain:
+// persistent overrides that survive logins and reboots.
+func readDisabled() map[string]bool {
+	out, err := exec.Command("launchctl", "print-disabled", guiDomain()).Output()
+	if err != nil {
+		return nil
+	}
+	m := map[string]bool{}
+	re := regexp.MustCompile(`"([^"]+)"\s*=>\s*(true|disabled)`)
+	for _, match := range re.FindAllStringSubmatch(string(out), -1) {
+		m[match[1]] = true
+	}
+	return m
+}
 
 type state struct {
 	pid      int

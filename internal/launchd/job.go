@@ -47,6 +47,7 @@ type Job struct {
 	// to inspect, so StateKnown is false for them.
 	StateKnown bool
 	Loaded     bool
+	Disabled   bool // persistent launchctl disable override
 	PID        int
 	LastExit   *int
 }

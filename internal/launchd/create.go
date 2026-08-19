@@ -187,6 +187,7 @@ func (n NewJob) Create(load bool) error {
 		return fmt.Errorf("plutil: %s", string(out))
 	}
 	if load {
+		_ = launchctl("enable", guiDomain()+"/"+n.Label) // clear stale overrides
 		return launchctl("bootstrap", guiDomain(), path)
 	}
 	return nil
