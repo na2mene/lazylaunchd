@@ -25,6 +25,8 @@ var (
 	okBanner     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("16")).Background(lipgloss.Color("42"))
 	errBanner    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("230")).Background(lipgloss.Color("124"))
 	menuBox      = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("39")).Padding(0, 2)
+	pathLocStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("45"))
+	dirCandStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
 )
 
 type viewMode int
@@ -33,11 +35,13 @@ const (
 	listView viewMode = iota
 	detailView
 	menuView
+	wizardView
 )
 
 const (
 	actRun = iota
 	actToggle
+	actDelete
 	actDetail
 )
 
@@ -66,8 +70,17 @@ type Model struct {
 	menu       []menuEntry
 	menuCursor int
 	detailFrom viewMode // where esc/q from the detail view returns to
+	wiz        *wizard
 	width      int
 	height     int
+}
+
+// curJob returns the job under the cursor. Cursor 0 is the "+ New job" row.
+func (m Model) curJob() (launchd.Job, bool) {
+	if m.cursor == 0 || m.cursor > len(m.jobs) {
+		return launchd.Job{}, false
+	}
+	return m.jobs[m.cursor-1], true
 }
 
 func New(jobs []launchd.Job, pw power.Status) Model {
@@ -77,9 +90,14 @@ func New(jobs []launchd.Job, pw power.Status) Model {
 func (m Model) Init() tea.Cmd { return nil }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width, m.height = ws.Width, ws.Height
+		return m, nil
+	}
+	if m.mode == wizardView && m.wiz != nil {
+		return m.updateWizard(msg)
+	}
 	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
 	case tea.KeyMsg:
 		if m.confirm != nil {
 			switch msg.String() {
@@ -87,9 +105,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				c := m.confirm
 				m.confirm = nil
 				if err := c.run(); err != nil {
-					m.status = errStyle.Render(err.Error())
+					m.status = errBanner.Render(" ✗ " + err.Error() + " ")
 				} else {
-					m.status = okStyle.Render(c.done)
+					m.status = okBanner.Render(" ✓ " + c.done + " ")
+					if m.mode == menuView {
+						m.mode = listView // the job the menu belonged to is gone
+					}
 				}
 				m = m.rescan()
 			case "ctrl+c":
@@ -134,7 +155,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode = m.detailFrom
 			}
 		case "j", "down":
-			if m.mode == listView && m.cursor < len(m.jobs)-1 {
+			if m.mode == listView && m.cursor < len(m.jobs) {
 				m.cursor++
 			}
 		case "k", "up":
@@ -144,22 +165,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "g":
 			m.cursor = 0
 		case "G":
-			m.cursor = max(0, len(m.jobs)-1)
+			m.cursor = len(m.jobs)
+		case "n":
+			if m.mode == listView {
+				return m.startWizard()
+			}
 		case "enter":
-			if m.mode == listView && len(m.jobs) > 0 {
+			if m.mode != listView {
+				break
+			}
+			if m.cursor == 0 {
+				return m.startWizard()
+			}
+			if j, ok := m.curJob(); ok {
 				m.mode = menuView
-				m.menu = buildMenu(m.jobs[m.cursor])
+				m.menu = buildMenu(j)
 				m.menuCursor = 0
 			}
 		case "d":
-			if len(m.jobs) > 0 {
+			if j, ok := m.curJob(); ok {
 				m.mode = detailView
 				m.detailFrom = listView
-				m.log, m.logSrc = tailLogFor(m.jobs[m.cursor])
+				m.log, m.logSrc = tailLogFor(j)
 			}
 		case "x":
-			if len(m.jobs) > 0 {
-				j := m.jobs[m.cursor]
+			if j, ok := m.curJob(); ok {
 				if err := launchd.RunNow(j); err != nil {
 					m.status = errStyle.Render(err.Error())
 				} else {
@@ -168,8 +198,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m = m.rescan()
 			}
 		case "u":
-			if len(m.jobs) > 0 {
-				j := m.jobs[m.cursor]
+			if j, ok := m.curJob(); ok {
 				switch {
 				case j.Kind == launchd.Daemon:
 					m.status = errStyle.Render("system daemons need root — use sudo launchctl")
@@ -205,19 +234,24 @@ func buildMenu(j launchd.Job) []menuEntry {
 	if j.Loaded {
 		toggle.label = "Disable — unload, schedule stops"
 	}
+	del := menuEntry{id: actDelete, label: "Delete — unload & move plist + logs to Trash", ok: j.Kind == launchd.UserAgent}
+	if !del.ok {
+		del.note = "user agents only"
+	}
 	return []menuEntry{
 		{id: actRun, label: "Run now", note: rootNote, ok: actionable},
 		toggle,
+		del,
 		{id: actDetail, label: "Detail & logs", ok: true},
 	}
 }
 
 func (m Model) execMenu() Model {
-	if len(m.jobs) == 0 || m.menuCursor >= len(m.menu) {
+	j, ok := m.curJob()
+	if !ok || m.menuCursor >= len(m.menu) {
 		m.mode = listView
 		return m
 	}
-	j := m.jobs[m.cursor]
 	entry := m.menu[m.menuCursor]
 
 	if !entry.ok {
@@ -251,6 +285,12 @@ func (m Model) execMenu() Model {
 			m.status = okBanner.Render(" ✓ " + verb + ": " + j.Label + " ")
 		}
 		m = m.rescan()
+	case actDelete:
+		m.confirm = &confirmState{
+			prompt: fmt.Sprintf("delete %s? unloads it, moves plist + logs to Trash (y/N)", j.Label),
+			done:   "deleted (plist in Trash): " + j.Label,
+			run:    func() error { return launchd.Delete(j) },
+		}
 	case actDetail:
 		m.mode = detailView
 		m.detailFrom = menuView
@@ -265,11 +305,13 @@ func (m Model) rescan() Model {
 		m.jobs = jobs
 	}
 	m.power = power.Read()
-	if m.cursor >= len(m.jobs) {
-		m.cursor = max(0, len(m.jobs)-1)
+	if m.cursor > len(m.jobs) {
+		m.cursor = len(m.jobs)
 	}
-	if m.mode == detailView && len(m.jobs) > 0 {
-		m.log, m.logSrc = tailLogFor(m.jobs[m.cursor])
+	if m.mode == detailView {
+		if j, ok := m.curJob(); ok {
+			m.log, m.logSrc = tailLogFor(j)
+		}
 	}
 	return m
 }
@@ -284,6 +326,8 @@ func (m Model) View() string {
 		return m.detail()
 	case menuView:
 		return m.menuPanel()
+	case wizardView:
+		return m.wizardView()
 	default:
 		return m.list()
 	}
@@ -291,7 +335,10 @@ func (m Model) View() string {
 
 // menuPanel shows the selectable actions for the current job.
 func (m Model) menuPanel() string {
-	j := m.jobs[m.cursor]
+	j, ok := m.curJob()
+	if !ok {
+		return m.list()
+	}
 	var b strings.Builder
 
 	b.WriteString(titleStyle.Render(j.Label) + "\n")
@@ -314,7 +361,8 @@ func (m Model) menuPanel() string {
 	}
 	b.WriteString(menuBox.Render(strings.TrimRight(items.String(), "\n")) + "\n")
 
-	b.WriteString("\n" + helpStyle.Render("j/k move · enter select · esc cancel"))
+	b.WriteString("\n" + m.statusLine())
+	b.WriteString(helpStyle.Render("j/k move · enter select · esc cancel"))
 	return b.String()
 }
 
@@ -327,7 +375,7 @@ func (m Model) list() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("lazylaunchd") + "  " + dimStyle.Render(m.power.Headline()) + "\n\n")
 
-	rows := []row{}
+	rows := []row{{job: -2}} // "+ New job" row at the top
 	lastKind := launchd.Kind(-1)
 	counts := map[launchd.Kind]int{}
 	for _, j := range m.jobs {
@@ -348,7 +396,7 @@ func (m Model) list() string {
 	}
 	cursorRow := 0
 	for ri, r := range rows {
-		if r.job == m.cursor {
+		if (r.job == -2 && m.cursor == 0) || (r.job >= 0 && r.job == m.cursor-1) {
 			cursorRow = ri
 		}
 	}
@@ -366,6 +414,14 @@ func (m Model) list() string {
 			b.WriteString(sectionStyle.Render(r.header) + "\n")
 			continue
 		}
+		if r.job == -2 {
+			line := "  + New job… "
+			if m.cursor == 0 {
+				line = cursorStyle.Render("▸" + line[1:])
+			}
+			b.WriteString(line + "\n")
+			continue
+		}
 		j := m.jobs[r.job]
 		line := fmt.Sprintf("  %s %s  %s  %s",
 			stateDot(j),
@@ -373,14 +429,14 @@ func (m Model) list() string {
 			pad(trunc(j.Schedule, schedW), schedW),
 			stateText(j),
 		)
-		if r.job == m.cursor {
+		if r.job == m.cursor-1 {
 			line = cursorStyle.Render("▸" + line[1:])
 		}
 		b.WriteString(line + "\n")
 	}
 
 	b.WriteString("\n" + m.statusLine())
-	b.WriteString(helpStyle.Render("enter actions (run/enable/disable) · d detail · j/k move · r refresh · q quit"))
+	b.WriteString(helpStyle.Render("enter actions (run/enable/disable) · n new job · d detail · j/k move · r refresh · q quit"))
 	return b.String()
 }
 
@@ -396,7 +452,10 @@ func (m Model) statusLine() string {
 }
 
 func (m Model) detail() string {
-	j := m.jobs[m.cursor]
+	j, ok := m.curJob()
+	if !ok {
+		return m.list()
+	}
 	var b strings.Builder
 
 	b.WriteString(titleStyle.Render(j.Label) + "\n")

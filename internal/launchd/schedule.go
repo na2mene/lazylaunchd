@@ -68,6 +68,8 @@ func calendarSummary(v interface{}) string {
 		switch {
 		case e.weekday >= 0:
 			return fmt.Sprintf("weekly (%s) at %s", weekdayName(e.weekday), hhmm(e.hour, e.minute))
+		case e.month >= 0 && e.day >= 0:
+			return fmt.Sprintf("on %02d-%02d at %s", e.month, e.day, hhmm(e.hour, e.minute))
 		case e.day >= 0:
 			return fmt.Sprintf("monthly (day %d) at %s", e.day, hhmm(e.hour, e.minute))
 		case e.hour >= 0:
