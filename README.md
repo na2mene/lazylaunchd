@@ -22,7 +22,7 @@ System Agents (2)
 System Daemons (1)
   ◌ com.example.checkin          every 15m                system domain (root)
 
-j/k move · enter detail · x run now · u load/unload · r refresh · q quit
+enter actions (run/enable/disable) · d detail · j/k move · r refresh · q quit
 ```
 
 ## Install
@@ -40,14 +40,18 @@ lazylaunchd --dump   # plain table, for scripts / grep
 
 ### Keys
 
-| Key       | Action                                                     |
-|-----------|------------------------------------------------------------|
-| `j` / `k` | move                                                       |
-| `enter`   | job detail (program, schedule, log tail)                   |
-| `x`       | run now (loads first if needed, then kickstarts)           |
-| `u`       | load / unload toggle (unload asks for confirmation)        |
-| `r`       | refresh                                                    |
-| `esc`/`q` | back / quit                                                |
+| Key       | Action                                                        |
+|-----------|---------------------------------------------------------------|
+| `j` / `k` | move                                                          |
+| `enter`   | action menu: Run now / Enable / Disable / Detail & logs       |
+| `d`       | job detail (program, schedule, log tail)                      |
+| `x`       | shortcut: run now (loads first if needed, then kickstarts)    |
+| `u`       | shortcut: load / unload toggle (unload asks for confirmation) |
+| `r`       | refresh                                                       |
+| `esc`/`q` | back / quit                                                   |
+
+Every action is reachable from the `enter` menu — the single-key shortcuts are
+optional muscle memory, not required knowledge.
 
 ### Recommended alias
 

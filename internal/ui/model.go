@@ -22,6 +22,9 @@ var (
 	helpStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	okStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	confirmStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("229")).Background(lipgloss.Color("124"))
+	okBanner     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("16")).Background(lipgloss.Color("42"))
+	errBanner    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("230")).Background(lipgloss.Color("124"))
+	menuBox      = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("39")).Padding(0, 2)
 )
 
 type viewMode int
@@ -29,7 +32,21 @@ type viewMode int
 const (
 	listView viewMode = iota
 	detailView
+	menuView
 )
+
+const (
+	actRun = iota
+	actToggle
+	actDetail
+)
+
+type menuEntry struct {
+	id    int
+	label string
+	note  string
+	ok    bool
+}
 
 type confirmState struct {
 	prompt string
@@ -38,16 +55,18 @@ type confirmState struct {
 }
 
 type Model struct {
-	jobs    []launchd.Job
-	power   power.Status
-	cursor  int
-	mode    viewMode
-	log     []string
-	logSrc  string
-	status  string
-	confirm *confirmState
-	width   int
-	height  int
+	jobs       []launchd.Job
+	power      power.Status
+	cursor     int
+	mode       viewMode
+	log        []string
+	logSrc     string
+	status     string
+	confirm    *confirmState
+	menu       []menuEntry
+	menuCursor int
+	width      int
+	height     int
 }
 
 func New(jobs []launchd.Job, pw power.Status) Model {
@@ -80,6 +99,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.mode == menuView {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc", "q":
+				m.mode = listView
+			case "j", "down":
+				if m.menuCursor < len(m.menu)-1 {
+					m.menuCursor++
+				}
+			case "k", "up":
+				if m.menuCursor > 0 {
+					m.menuCursor--
+				}
+			case "enter":
+				m = m.execMenu()
+			}
+			return m, nil
+		}
 		m.status = ""
 		switch msg.String() {
 		case "ctrl+c":
@@ -106,6 +144,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cursor = max(0, len(m.jobs)-1)
 		case "enter":
 			if m.mode == listView && len(m.jobs) > 0 {
+				m.mode = menuView
+				m.menu = buildMenu(m.jobs[m.cursor])
+				m.menuCursor = 0
+			}
+		case "d":
+			if len(m.jobs) > 0 {
 				m.mode = detailView
 				m.log, m.logSrc = tailLogFor(m.jobs[m.cursor])
 			}
@@ -147,6 +191,69 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func buildMenu(j launchd.Job) []menuEntry {
+	rootNote := ""
+	actionable := j.Kind != launchd.Daemon
+	if !actionable {
+		rootNote = "needs root"
+	}
+	toggle := menuEntry{id: actToggle, label: "Enable — load, schedule resumes", ok: actionable, note: rootNote}
+	if j.Loaded {
+		toggle.label = "Disable — unload, schedule stops"
+	}
+	return []menuEntry{
+		{id: actRun, label: "Run now", note: rootNote, ok: actionable},
+		toggle,
+		{id: actDetail, label: "Detail & logs", ok: true},
+	}
+}
+
+func (m Model) execMenu() Model {
+	if len(m.jobs) == 0 || m.menuCursor >= len(m.menu) {
+		m.mode = listView
+		return m
+	}
+	j := m.jobs[m.cursor]
+	entry := m.menu[m.menuCursor]
+
+	if !entry.ok {
+		m.mode = listView
+		m.status = errBanner.Render(" ✗ system daemons need root — use sudo launchctl ")
+		return m
+	}
+
+	switch entry.id {
+	case actRun:
+		m.mode = listView
+		if err := launchd.RunNow(j); err != nil {
+			m.status = errBanner.Render(" ✗ " + err.Error() + " ")
+		} else {
+			m.status = okBanner.Render(" ✓ started: " + j.Label + " ")
+		}
+		m = m.rescan()
+	case actToggle:
+		m.mode = listView
+		var err error
+		verb := "enabled"
+		if j.Loaded {
+			verb = "disabled"
+			err = launchd.Unload(j)
+		} else {
+			err = launchd.Load(j)
+		}
+		if err != nil {
+			m.status = errBanner.Render(" ✗ " + err.Error() + " ")
+		} else {
+			m.status = okBanner.Render(" ✓ " + verb + ": " + j.Label + " ")
+		}
+		m = m.rescan()
+	case actDetail:
+		m.mode = detailView
+		m.log, m.logSrc = tailLogFor(j)
+	}
+	return m
+}
+
 // rescan refreshes jobs, power state, and (in detail view) the log tail.
 func (m Model) rescan() Model {
 	if jobs, err := launchd.Scan(); err == nil {
@@ -167,10 +274,43 @@ func (m Model) View() string {
 		// No WindowSizeMsg yet (or a pty that reports no size): use a sane default.
 		m.width, m.height = 80, 24
 	}
-	if m.mode == detailView {
+	switch m.mode {
+	case detailView:
 		return m.detail()
+	case menuView:
+		return m.menuPanel()
+	default:
+		return m.list()
 	}
-	return m.list()
+}
+
+// menuPanel shows the selectable actions for the current job.
+func (m Model) menuPanel() string {
+	j := m.jobs[m.cursor]
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render(j.Label) + "\n")
+	b.WriteString(dimStyle.Render(j.Schedule) + "  " + stateText(j) + "\n\n")
+
+	var items strings.Builder
+	for i, e := range m.menu {
+		label := e.label
+		if e.note != "" {
+			label += "  (" + e.note + ")"
+		}
+		switch {
+		case i == m.menuCursor:
+			items.WriteString(cursorStyle.Render("▸ "+label) + "\n")
+		case !e.ok:
+			items.WriteString(dimStyle.Render("  "+label) + "\n")
+		default:
+			items.WriteString("  " + label + "\n")
+		}
+	}
+	b.WriteString(menuBox.Render(strings.TrimRight(items.String(), "\n")) + "\n")
+
+	b.WriteString("\n" + helpStyle.Render("j/k move · enter select · esc cancel"))
+	return b.String()
 }
 
 type row struct {
@@ -235,7 +375,7 @@ func (m Model) list() string {
 	}
 
 	b.WriteString("\n" + m.statusLine())
-	b.WriteString(helpStyle.Render("j/k move · enter detail · x run now · u load/unload · r refresh · q quit"))
+	b.WriteString(helpStyle.Render("enter actions (run/enable/disable) · d detail · j/k move · r refresh · q quit"))
 	return b.String()
 }
 
@@ -247,7 +387,7 @@ func (m Model) statusLine() string {
 	if m.status != "" {
 		return m.status + "\n"
 	}
-	return ""
+	return "\n"
 }
 
 func (m Model) detail() string {
