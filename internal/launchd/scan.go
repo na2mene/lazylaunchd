@@ -17,8 +17,9 @@ type rawPlist struct {
 	StartCalendarInterval interface{} `plist:"StartCalendarInterval"`
 	RunAtLoad             bool        `plist:"RunAtLoad"`
 	KeepAlive             interface{} `plist:"KeepAlive"`
-	StandardOutPath       string      `plist:"StandardOutPath"`
-	StandardErrorPath     string      `plist:"StandardErrorPath"`
+	StandardOutPath       string            `plist:"StandardOutPath"`
+	StandardErrorPath     string            `plist:"StandardErrorPath"`
+	EnvironmentVariables  map[string]string `plist:"EnvironmentVariables"`
 }
 
 // Scan reads every job definition from the standard launchd directories
@@ -102,5 +103,6 @@ func parse(path string, kind Kind) Job {
 	job.KeptAlive = keepAliveLabel(raw.KeepAlive) != ""
 	job.interval = raw.StartInterval
 	job.calendar = normalizeCalendar(raw.StartCalendarInterval)
+	job.EnvPATH = raw.EnvironmentVariables["PATH"]
 	return job
 }

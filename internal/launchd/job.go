@@ -37,8 +37,9 @@ type Job struct {
 	StdoutPath string
 	StderrPath string
 	ParseError string
-	Timed      bool // has StartCalendarInterval or StartInterval
-	KeptAlive  bool // has KeepAlive (bool true or conditional dict)
+	Timed      bool   // has StartCalendarInterval or StartInterval
+	KeptAlive  bool   // has KeepAlive (bool true or conditional dict)
+	EnvPATH    string // EnvironmentVariables.PATH, if the plist sets one
 
 	interval int        // StartInterval seconds
 	calendar []calEntry // parsed StartCalendarInterval

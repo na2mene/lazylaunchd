@@ -23,21 +23,28 @@ const (
 	wSchedType
 	wSchedValue
 	wLogDir
+	wEnvPath
 	wConfirm
 )
+
+// launchd hands jobs a bare PATH (/usr/bin:/bin:/usr/sbin:/sbin), which
+// hides every Homebrew-installed tool. This default fixes that.
+const defaultEnvPath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 var schedOptions = []struct {
 	label string
 	kind  int
 	hint  string
 }{
+	// Ordered by how often the job fires, shortest interval first;
+	// the non-scheduled pair sits at the bottom.
+	{"Every N minutes", launchd.SchedInterval, "minutes, e.g. 15"},
 	{"Hourly at xx:MM", launchd.SchedHourly, "minute 0-59, e.g. 30"},
 	{"Daily at HH:MM", launchd.SchedDaily, "e.g. 09:30"},
 	{"Weekly on a day at HH:MM", launchd.SchedWeekly, "day + time, e.g. mon 09:30"},
-	{"Every N minutes", launchd.SchedInterval, "minutes, e.g. 15"},
+	{"Once at a specific date/time", launchd.SchedOnce, "MM-DD HH:MM, e.g. 01-01 15:00"},
 	{"Always on (KeepAlive)", launchd.SchedKeepAlive, ""},
 	{"Manual only", launchd.SchedManual, ""},
-	{"Once at a specific date/time", launchd.SchedOnce, "MM-DD HH:MM, e.g. 01-01 15:00"},
 }
 
 var confirmOptions = []string{"Save & load now", "Save only (load later with u)", "Cancel"}
@@ -64,6 +71,8 @@ type wizard struct {
 	intervalMin int
 	logDirRaw   string
 	logDir      string
+	envPathRaw  string
+	envSeed     string
 	preview     string
 	errMsg      string
 	completions []string
@@ -84,6 +93,8 @@ func newWizard() *wizard {
 		prefix = "com." + u.Username + "."
 	}
 	w := &wizard{input: ti, prefix: prefix, schedKind: -1}
+	w.envPathRaw = defaultEnvPath
+	w.envSeed = defaultEnvPath
 	w.prepInput()
 	return w
 }
@@ -105,6 +116,9 @@ func (w *wizard) prepInput() {
 			w.logDirRaw = "~/Library/Logs/" + w.label
 		}
 		w.input.SetValue(w.logDirRaw)
+	case wEnvPath:
+		w.input.Placeholder = defaultEnvPath
+		w.input.SetValue(w.envPathRaw)
 	}
 	w.input.CursorEnd()
 	if w.step == wScript || w.step == wLogDir {
@@ -130,8 +144,10 @@ func (w *wizard) prevStep() int {
 			return wSchedValue
 		}
 		return wSchedType
-	case wConfirm:
+	case wEnvPath:
 		return wLogDir
+	case wConfirm:
+		return wEnvPath
 	default:
 		return w.step - 1
 	}
@@ -297,6 +313,8 @@ func (w *wizard) newJob() launchd.NewJob {
 		nj.StdoutPath = w.orig.StdoutPath
 		nj.StderrPath = w.orig.StderrPath
 	}
+	nj.EnvPath = w.envPathRaw
+	nj.EnvPathSet = w.envPathRaw != w.envSeed
 	return nj
 }
 
@@ -330,6 +348,10 @@ func (m Model) startEditForm(j launchd.Job) (Model, tea.Cmd) {
 		w.logDirRaw = shortenHome(filepath.Dir(j.StdoutPath))
 		w.logSeed = w.logDirRaw
 	}
+	// Never add a PATH to an existing job behind the user's back: seed with
+	// whatever the plist has now (possibly nothing).
+	w.envPathRaw = j.EnvPATH
+	w.envSeed = j.EnvPATH
 	w.prepInput()
 	m.wiz = w
 	return m, textinput.Blink
@@ -359,6 +381,10 @@ func (m Model) updateWizard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				w.input.SetValue(val)
 				w.input.CursorEnd()
 				w.completions = listCandidates(val)
+			}
+			if w.step == wEnvPath {
+				w.input.SetValue(defaultEnvPath)
+				w.input.CursorEnd()
 			}
 			return m, nil
 		}
@@ -414,6 +440,11 @@ func (m Model) wizardEnter() (tea.Model, tea.Cmd) {
 			w.program = w.orig.Program
 		default:
 			path := expandTilde(raw)
+			// launchd starts jobs with CWD=/ — a relative path in the
+			// plist would never resolve, so pin it down now.
+			if abs, err := filepath.Abs(path); err == nil {
+				path = abs
+			}
 			info, err := os.Stat(path)
 			switch {
 			case err == nil && info.IsDir():
@@ -483,6 +514,11 @@ func (m Model) wizardEnter() (tea.Model, tea.Cmd) {
 		}
 		w.logDirRaw = raw
 		w.logDir = expandTilde(raw)
+		w.step = wEnvPath
+		w.prepInput()
+
+	case wEnvPath:
+		w.envPathRaw = strings.TrimSpace(w.input.Value())
 		var data []byte
 		var err error
 		if w.editing {
@@ -600,9 +636,9 @@ func (m Model) wizardView() string {
 	w := m.wiz
 	var b strings.Builder
 
-	title, total, stepNo := "New job", 6, w.step+1
+	title, total, stepNo := "New job", 7, w.step+1
 	if w.editing {
-		title, total = "Edit job", 5
+		title, total = "Edit job", 6
 		if w.step >= wSchedType {
 			stepNo = w.step // the label step is skipped
 		}
@@ -621,6 +657,11 @@ func (m Model) wizardView() string {
 		cur("Schedule", w.orig.Schedule)
 		if w.orig.StdoutPath != "" {
 			cur("Logs", shortenHome(filepath.Dir(w.orig.StdoutPath)))
+		}
+		if w.orig.EnvPATH != "" {
+			cur("PATH", trunc(w.orig.EnvPATH, max(20, m.width-14)))
+		} else {
+			cur("PATH", dimStyle.Render("— (launchd minimal PATH)"))
 		}
 		b.WriteString("\n")
 	}
@@ -644,6 +685,13 @@ func (m Model) wizardView() string {
 	}
 	if w.step > wLogDir {
 		done("Logs", w.logDirRaw)
+	}
+	if w.step > wEnvPath {
+		v := w.envPathRaw
+		if v == "" {
+			v = "(none)"
+		}
+		done("PATH", trunc(v, max(20, m.width-14)))
 	}
 	if dn.Len() > 0 {
 		if w.editing {
@@ -689,6 +737,11 @@ func (m Model) wizardView() string {
 		b.WriteString(dimStyle.Render("Written into the plist as StandardOutPath / StandardErrorPath.") + "\n\n")
 		b.WriteString("  " + w.input.View() + "\n")
 		b.WriteString(dimStyle.Render("  enter = accept this default") + "\n")
+	case wEnvPath:
+		b.WriteString(sectionStyle.Render("Environment PATH") + "\n")
+		b.WriteString(dimStyle.Render("launchd gives jobs a minimal PATH — Homebrew-installed tools are invisible without this.") + "\n\n")
+		b.WriteString("  " + w.input.View() + "\n")
+		b.WriteString(dimStyle.Render("  tab = insert recommended default · empty = no PATH override") + "\n")
 	case wConfirm:
 		verb := "written to"
 		opts := confirmOptions
@@ -725,6 +778,9 @@ func (m Model) wizardView() string {
 	help := "enter next · esc back"
 	if w.step == wScript || w.step == wLogDir {
 		help = "tab complete path · enter next · esc back"
+	}
+	if w.step == wEnvPath {
+		help = "tab insert default · enter next · esc back"
 	}
 	if w.step == wSchedType || w.step == wConfirm {
 		help = "j/k move · enter select · esc back"

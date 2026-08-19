@@ -39,6 +39,12 @@ type NewJob struct {
 	IntervalMin int // SchedInterval
 	StdoutPath string
 	StderrPath string
+
+	// EnvPath is written as EnvironmentVariables.PATH — launchd gives jobs
+	// a minimal PATH, so Homebrew-installed tools are invisible without it.
+	// EnvPathSet marks whether an edit should touch the PATH at all.
+	EnvPath    string
+	EnvPathSet bool
 }
 
 // PlistPath is where the job definition will be written.
@@ -58,6 +64,9 @@ func (n NewJob) BuildPlist() ([]byte, error) {
 	}
 	if n.StderrPath != "" {
 		d["StandardErrorPath"] = n.StderrPath
+	}
+	if n.EnvPath != "" {
+		d["EnvironmentVariables"] = map[string]interface{}{"PATH": n.EnvPath}
 	}
 	switch n.SchedKind {
 	case SchedHourly:
@@ -123,8 +132,27 @@ func BuildEditedPlist(originalPath string, n NewJob) ([]byte, error) {
 	for _, k := range managedKeys {
 		delete(dict, k)
 	}
+	delete(newDict, "EnvironmentVariables") // handled key-by-key below
 	for k, v := range newDict {
 		dict[k] = v
+	}
+	// PATH is edited surgically: other variables in an existing
+	// EnvironmentVariables dict must survive.
+	if n.EnvPathSet {
+		env, _ := dict["EnvironmentVariables"].(map[string]interface{})
+		if env == nil {
+			env = map[string]interface{}{}
+		}
+		if n.EnvPath == "" {
+			delete(env, "PATH")
+		} else {
+			env["PATH"] = n.EnvPath
+		}
+		if len(env) == 0 {
+			delete(dict, "EnvironmentVariables")
+		} else {
+			dict["EnvironmentVariables"] = env
+		}
 	}
 	return plist.MarshalIndent(dict, plist.XMLFormat, "  ")
 }

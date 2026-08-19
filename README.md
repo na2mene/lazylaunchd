@@ -92,6 +92,9 @@ belong to root.
 
 - [x] Run now / load / unload from the TUI
 - [x] New-job wizard: answer a few questions, get a valid plist, loaded
+- [x] PATH step — launchd's minimal PATH hides Homebrew tools ("works in
+      the terminal, fails under launchd"); the wizard writes
+      `EnvironmentVariables.PATH` so plain scripts just work
 - [x] Per-job "survives lid close?" indicator
 - [x] Follow logs live
 - [x] Run history (●●✗) and failure notifications

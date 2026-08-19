@@ -841,6 +841,9 @@ func (m Model) jobInfo(j launchd.Job) string {
 	}
 	field("Plist", shortenHome(j.PlistPath))
 	field("Program", trunc(strings.Join(j.Program, " "), m.width-14))
+	if j.EnvPATH != "" {
+		field("Env PATH", trunc(j.EnvPATH, max(20, m.width-14)))
+	}
 	field("Schedule", j.Schedule)
 	if t, ok := j.NextRun(time.Now()); ok {
 		field("Next run", fmt.Sprintf("%s (in %s)", t.Format("2006-01-02 15:04"), humanDur(time.Until(t))))
