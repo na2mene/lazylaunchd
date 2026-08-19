@@ -6,9 +6,14 @@ See every launchd job on your Mac — what script it runs, on what schedule, whe
 actually running — without memorizing `launchctl` incantations or hand-reading plist XML.
 
 Built for people who run a Mac (or Mac mini) as an always-on box: AI agents, cron-like
-jobs, home servers. The header answers the question that matters most for that setup:
-**"will my jobs keep running with the lid closed?"** — by combining power source and
-sleep-assertion state from `pmset`.
+jobs, home servers. It answers the question that matters most for that setup:
+**"will my jobs keep running with the lid closed?"** — the header shows the machine-wide
+verdict, and every job row carries its own sleep-impact indicator:
+
+- `✓` runs 24/7 (AC power + an active sleep assertion keeps the Mac awake)
+- `~` skipped or paused while the Mac sleeps (one catch-up run on wake)
+- `!` on battery — closing the lid stops scheduled runs
+- `·` not schedule-driven; sleep doesn't matter
 
 ```
 lazylaunchd  ⚡ AC power · sleep prevented (caffeinate, powerd) — jobs run 24/7, even with the lid closed
@@ -75,9 +80,9 @@ GUI domain. System daemons stay read-only — they belong to root.
 
 - [x] Run now / load / unload from the TUI
 - [x] New-job wizard: answer a few questions, get a valid plist, loaded
-- [ ] Per-job "survives lid close?" indicator
+- [x] Per-job "survives lid close?" indicator
 - [ ] Follow logs live
-- [ ] Homebrew tap
+- [x] Homebrew tap (`brew install na2mene/tap/lazylaunchd`)
 
 ## Name
 

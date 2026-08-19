@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -11,6 +12,15 @@ import (
 	"github.com/na2mene/lazylaunchd/internal/launchd"
 	"github.com/na2mene/lazylaunchd/internal/power"
 )
+
+// tickMsg drives the background auto-refresh.
+type tickMsg struct{}
+
+const refreshInterval = 2 * time.Second
+
+func refreshTick() tea.Cmd {
+	return tea.Tick(refreshInterval, func(time.Time) tea.Msg { return tickMsg{} })
+}
 
 var (
 	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
@@ -27,7 +37,26 @@ var (
 	menuBox      = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("39")).Padding(0, 2)
 	pathLocStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("45"))
 	dirCandStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+	warnStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 )
+
+// sleepImpact answers the key question for a Mac used as an always-on box:
+// will this job actually do its work given the current power/sleep state?
+func sleepImpact(j launchd.Job, pw power.Status) (string, string) {
+	if !j.Timed && !j.KeptAlive {
+		return dimStyle.Render("·"), "Not schedule-driven — sleep has no effect on this job."
+	}
+	if pw.Known && pw.OnAC && pw.SleepPrevented {
+		return okStyle.Render("✓"), "The Mac is kept awake (AC + sleep assertion) — runs 24/7, even with the lid closed."
+	}
+	if j.Timed {
+		if pw.Known && !pw.OnAC {
+			return errStyle.Render("!"), "On battery, closing the lid sleeps the Mac — scheduled runs stop (one catch-up run on wake)."
+		}
+		return warnStyle.Render("~"), "No sleep prevention active — runs are skipped while the Mac sleeps (one catch-up run on wake)."
+	}
+	return warnStyle.Render("~"), "KeepAlive process pauses while the Mac sleeps and resumes on wake."
+}
 
 type viewMode int
 
@@ -87,12 +116,21 @@ func New(jobs []launchd.Job, pw power.Status) Model {
 	return Model{jobs: jobs, power: pw}
 }
 
-func (m Model) Init() tea.Cmd { return nil }
+func (m Model) Init() tea.Cmd { return refreshTick() }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width, m.height = ws.Width, ws.Height
 		return m, nil
+	}
+	if _, ok := msg.(tickMsg); ok {
+		// Refresh data only — never cursor, mode, or scroll — so navigation
+		// is unaffected. Paused while a menu, confirm, or the wizard is open:
+		// the job list must not shift under a pending selection.
+		if m.confirm == nil && (m.mode == listView || m.mode == detailView) {
+			m = m.rescan()
+		}
+		return m, refreshTick()
 	}
 	if m.mode == wizardView && m.wiz != nil {
 		return m.updateWizard(msg)
@@ -373,7 +411,10 @@ type row struct {
 
 func (m Model) list() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("lazylaunchd") + "  " + dimStyle.Render(m.power.Headline()) + "\n\n")
+	b.WriteString(titleStyle.Render("lazylaunchd") + "  " + dimStyle.Render(m.power.Headline()) + "\n")
+	b.WriteString(dimStyle.Render("  sleep: ") + okStyle.Render("✓") + dimStyle.Render(" runs 24/7 · ") +
+		warnStyle.Render("~") + dimStyle.Render(" skipped/paused while asleep · ") +
+		errStyle.Render("!") + dimStyle.Render(" stops on battery lid-close") + "\n\n")
 
 	rows := []row{{job: -2}} // "+ New job" row at the top
 	lastKind := launchd.Kind(-1)
@@ -390,7 +431,7 @@ func (m Model) list() string {
 	}
 
 	// Simple scrolling: keep the cursor row visible.
-	avail := m.height - 6
+	avail := m.height - 7
 	if avail < 3 {
 		avail = 3
 	}
@@ -415,7 +456,7 @@ func (m Model) list() string {
 			continue
 		}
 		if r.job == -2 {
-			line := "  + New job… "
+			line := "    + New job… "
 			if m.cursor == 0 {
 				line = cursorStyle.Render("▸" + line[1:])
 			}
@@ -423,7 +464,9 @@ func (m Model) list() string {
 			continue
 		}
 		j := m.jobs[r.job]
-		line := fmt.Sprintf("  %s %s  %s  %s",
+		icon, _ := sleepImpact(j, m.power)
+		line := fmt.Sprintf("  %s %s %s  %s  %s",
+			icon,
 			stateDot(j),
 			pad(trunc(j.Label, labelW), labelW),
 			pad(trunc(j.Schedule, schedW), schedW),
@@ -470,6 +513,8 @@ func (m Model) detail() string {
 	field("Plist", shortenHome(j.PlistPath))
 	field("Program", trunc(strings.Join(j.Program, " "), m.width-14))
 	field("Schedule", j.Schedule)
+	sleepIcon, sleepNote := sleepImpact(j, m.power)
+	field("Sleep", sleepIcon+" "+sleepNote)
 	field("Stdout", shortenHome(j.StdoutPath))
 	field("Stderr", shortenHome(j.StderrPath))
 	if j.ParseError != "" {

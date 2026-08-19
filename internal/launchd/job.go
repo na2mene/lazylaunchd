@@ -31,6 +31,8 @@ type Job struct {
 	StdoutPath string
 	StderrPath string
 	ParseError string
+	Timed      bool // has StartCalendarInterval or StartInterval
+	KeptAlive  bool // has KeepAlive (bool true or conditional dict)
 
 	// Runtime state. Daemons run in the system domain, which needs root
 	// to inspect, so StateKnown is false for them.

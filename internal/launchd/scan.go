@@ -96,5 +96,7 @@ func parse(path string, kind Kind) Job {
 	job.Schedule = humanizeSchedule(raw)
 	job.StdoutPath = raw.StandardOutPath
 	job.StderrPath = raw.StandardErrorPath
+	job.Timed = raw.StartInterval > 0 || raw.StartCalendarInterval != nil
+	job.KeptAlive = keepAliveLabel(raw.KeepAlive) != ""
 	return job
 }
