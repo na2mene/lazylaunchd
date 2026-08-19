@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -165,6 +166,7 @@ type Model struct {
 	logSize    int64
 	followSeq  int
 	editJob    launchd.Job // target of the in-flight $EDITOR session
+	editPrev   []byte      // plist content before the editor opened
 	wiz        *wizard
 	width      int
 	height     int
@@ -191,9 +193,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if ed, ok := msg.(editorDoneMsg); ok {
 		j := m.editJob
+		cur, readErr := os.ReadFile(j.PlistPath)
 		switch {
 		case ed.err != nil:
 			m.status = errBanner.Render(" ✗ editor: " + ed.err.Error() + " ")
+		case readErr == nil && bytes.Equal(cur, m.editPrev):
+			// :q! or closed without saving — don't lint, don't reload,
+			// don't restart a running job for nothing.
+			m.status = dimStyle.Render("no changes — nothing reloaded")
 		default:
 			if out, err := exec.Command("plutil", "-lint", j.PlistPath).CombinedOutput(); err != nil {
 				m.status = errBanner.Render(" ✗ edited but plist is INVALID — not reloaded: " + strings.TrimSpace(string(out)) + " ")
@@ -501,6 +508,7 @@ func (m Model) startEdit(j launchd.Job) (Model, tea.Cmd) {
 		editor = "vim"
 	}
 	m.editJob = j
+	m.editPrev, _ = os.ReadFile(j.PlistPath)
 	m.mode = listView
 	c := exec.Command(editor, j.PlistPath)
 	return m, tea.ExecProcess(c, func(err error) tea.Msg { return editorDoneMsg{err} })
