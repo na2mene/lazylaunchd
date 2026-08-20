@@ -53,9 +53,22 @@ go install github.com/na2mene/lazylaunchd@latest
 ## Usage
 
 ```sh
-lazylaunchd          # TUI
-lazylaunchd --dump   # plain table, for scripts / grep
+lazylaunchd                       # the TUI
+lazylaunchd setup                 # install/update the background watcher
+lazylaunchd doctor                # health check (exit 1 when something is broken)
+lazylaunchd export > jobs.json    # all user agents as portable JSON ($HOME → ~)
+lazylaunchd import jobs.json      # write them back (skips existing; --load to start)
+lazylaunchd --dump                # plain table, for scripts / grep
 ```
+
+`export` carries job definitions only — the scripts they run travel separately
+(keep them in a git repo). `import` warns per job when a referenced script
+doesn't exist yet, and `doctor` re-checks anytime.
+
+`doctor` catches the classics: programs that don't exist or aren't executable,
+relative paths (launchd runs jobs from `/`), missing working directories,
+oversized logs, and stale disable overrides that would silently block a future
+job with the same label.
 
 ### Keys
 
@@ -71,6 +84,7 @@ lazylaunchd --dump   # plain table, for scripts / grep
 | `u`       | shortcut: enable / disable toggle — disable stays off across restarts |
 | `/`       | filter jobs by label (live, esc clears)                       |
 | `s`       | toggle sort: grouped ⇄ by next run                            |
+| `t`       | Tools: export / import / doctor / watcher setup, in the TUI   |
 | `r`       | refresh                                                       |
 | `esc`/`q` | back / quit                                                   |
 
@@ -112,6 +126,8 @@ belong to root.
 - [x] Oversized-log warning and one-key truncation
 - [x] WorkingDirectory step (launchd starts jobs in `/`)
 - [x] Duplicate — new job seeded from an existing one
+- [x] Jobs as Code — `export` / `import` with `~`-portable paths
+- [x] `doctor` — one-shot health check for CI and setup validation
 - [x] Homebrew tap (`brew install na2mene/tap/lazylaunchd`)
 
 ## Name

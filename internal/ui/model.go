@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -122,6 +123,10 @@ const (
 	menuView
 	wizardView
 	logView
+	toolsView
+	toolImportView
+	toolExportView
+	toolReportView
 )
 
 const (
@@ -218,8 +223,16 @@ type Model struct {
 	filtering  bool
 	sortNext   bool
 	topSel     int // selected button on the top bar (cursor row 0)
-	width      int
-	height     int
+
+	toolsCursor int
+	toolInput   textinput.Model
+	toolCands   []string
+	toolTitle   string
+	toolReport  string
+	toolScroll  int
+
+	width  int
+	height int
 }
 
 // visible returns indices into m.jobs after filtering and sorting.
@@ -328,6 +341,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.mode == wizardView && m.wiz != nil {
 		return m.updateWizard(msg)
 	}
+	if m.mode == toolImportView {
+		return m.updateToolImport(msg)
+	}
+	if m.mode == toolExportView {
+		return m.updateToolExport(msg)
+	}
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		if m.confirm != nil {
@@ -355,6 +374,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		}
+		if m.mode == toolsView {
+			return m.updateTools(msg.String())
+		}
+		if m.mode == toolReportView {
+			return m.updateToolReport(msg.String())
 		}
 		if m.mode == logView {
 			switch msg.String() {
@@ -457,8 +482,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.topSel--
 			}
 		case "l", "right":
-			if m.mode == listView && m.cursor == 0 && m.topSel < 2 {
+			if m.mode == listView && m.cursor == 0 && m.topSel < 3 {
 				m.topSel++
+			}
+		case "t":
+			if m.mode == listView {
+				return m.openTools()
 			}
 		case "g":
 			m.cursor = 0
@@ -479,6 +508,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.filter = ""
 				case 2:
 					m.sortNext = !m.sortNext
+				case 3:
+					return m.openTools()
 				default:
 					return m.startWizard()
 				}
@@ -787,6 +818,14 @@ func (m Model) View() string {
 		return m.wizardView()
 	case logView:
 		return m.logPanel()
+	case toolsView:
+		return m.toolsPanel()
+	case toolImportView:
+		return m.toolImportPanel()
+	case toolExportView:
+		return m.toolExportPanel()
+	case toolReportView:
+		return m.toolReportPanel()
 	default:
 		return m.list()
 	}
@@ -916,7 +955,7 @@ func (m Model) list() string {
 			if m.sortNext {
 				sortLabel = "Sort: next run (s)"
 			}
-			b.WriteString(" " + seg(0, "+ New job (n)") + seg(1, "Search (/)") + seg(2, sortLabel) + "\n")
+			b.WriteString(" " + seg(0, "+ New job (n)") + seg(1, "Search (/)") + seg(2, sortLabel) + seg(3, "Tools (t)") + "\n")
 			continue
 		}
 		j := m.jobs[r.job]

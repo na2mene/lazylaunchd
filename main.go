@@ -33,6 +33,39 @@ func main() {
 			}
 			fmt.Println(msg)
 			return
+		case "doctor":
+			report, hasErrors := launchd.Doctor()
+			fmt.Print(report)
+			if hasErrors {
+				os.Exit(1)
+			}
+			return
+		case "export":
+			data, _, err := launchd.ExportUserAgents()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "export failed:", err)
+				os.Exit(1)
+			}
+			fmt.Println(string(data))
+			return
+		case "import":
+			if len(os.Args) < 3 {
+				fmt.Fprintln(os.Stderr, "usage: lazylaunchd import <jobs.json> [--load]")
+				os.Exit(1)
+			}
+			data, err := os.ReadFile(os.Args[2])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "import failed:", err)
+				os.Exit(1)
+			}
+			load := len(os.Args) > 3 && os.Args[3] == "--load"
+			summary, err := launchd.ImportJobs(data, load)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "import failed:", err)
+				os.Exit(1)
+			}
+			fmt.Print(summary)
+			return
 		}
 	}
 
