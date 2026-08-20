@@ -114,6 +114,45 @@ func Reload(j Job) error {
 	return launchctl("bootstrap", guiDomain(), j.PlistPath)
 }
 
+const logKeepTail = 1024 * 1024
+
+// TruncateLogs shrinks oversized log files to their last megabyte. Safe for
+// files launchd is appending to: launchd opens logs O_APPEND, so the job's
+// writes continue at the new end after truncation.
+func TruncateLogs(j Job) error {
+	seen := map[string]bool{}
+	for _, p := range []string{j.StdoutPath, j.StderrPath} {
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		fi, err := os.Stat(p)
+		if err != nil || fi.Size() <= logKeepTail {
+			continue
+		}
+		f, err := os.OpenFile(p, os.O_RDWR, 0)
+		if err != nil {
+			return err
+		}
+		tail := make([]byte, logKeepTail)
+		if _, err := f.ReadAt(tail, fi.Size()-logKeepTail); err != nil {
+			f.Close()
+			return err
+		}
+		if err := f.Truncate(0); err != nil {
+			f.Close()
+			return err
+		}
+		header := fmt.Sprintf("[truncated by lazylaunchd at %s — kept the last 1MB]\n", time.Now().Format("2006-01-02 15:04:05"))
+		if _, err := f.WriteAt(append([]byte(header), tail...), 0); err != nil {
+			f.Close()
+			return err
+		}
+		f.Close()
+	}
+	return nil
+}
+
 // RunNow starts the job immediately, loading it first if needed.
 func RunNow(j Job) error {
 	if j.Kind == Daemon {

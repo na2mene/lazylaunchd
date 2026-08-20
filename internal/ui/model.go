@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -129,8 +130,57 @@ const (
 	actToggle
 	actEditForm
 	actDelete
+	actTruncate
 	actFollow
 )
+
+const (
+	logWarnSize = 50 * 1024 * 1024 // detail view warns above this
+	truncateMin = 1024 * 1024      // Truncate keeps 1MB, so below this it's a no-op
+)
+
+func humanSize(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1fGB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1fMB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.0fKB", float64(n)/(1<<10))
+	}
+	return fmt.Sprintf("%dB", n)
+}
+
+// jobLogSize sums the job's log file sizes (dedup when stdout == stderr).
+func jobLogSize(j launchd.Job) int64 {
+	var total int64
+	seen := map[string]bool{}
+	for _, p := range []string{j.StdoutPath, j.StderrPath} {
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		if fi, err := os.Stat(p); err == nil {
+			total += fi.Size()
+		}
+	}
+	return total
+}
+
+func logPathWithSize(p string) string {
+	if p == "" {
+		return ""
+	}
+	s := shortenHome(p)
+	if fi, err := os.Stat(p); err == nil {
+		if fi.Size() > logWarnSize {
+			s += warnStyle.Render(fmt.Sprintf(" (⚠ %s — Truncate from the menu)", humanSize(fi.Size())))
+		} else {
+			s += dimStyle.Render(" (" + humanSize(fi.Size()) + ")")
+		}
+	}
+	return s
+}
 
 type menuEntry struct {
 	id    int
@@ -140,9 +190,10 @@ type menuEntry struct {
 }
 
 type confirmState struct {
-	prompt string
-	done   string
-	run    func() error
+	prompt   string
+	done     string
+	run      func() error
+	onCancel func()
 }
 
 type Model struct {
@@ -208,10 +259,43 @@ func (m Model) curJob() (launchd.Job, bool) {
 	return m.jobs[vis[m.cursor-1]], true
 }
 
+func watcherDeclinedMarker() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "Library/Application Support/lazylaunchd/watcher-declined")
+}
+
 func New(jobs []launchd.Job, pw power.Status) Model {
 	m := Model{jobs: jobs, power: pw, hist: launchd.LoadHistory()}
 	m.hist.Observe(jobs) // baseline snapshot
+
+	// First-run offer: one keypress sets up the background watcher.
+	// Declining writes a marker so we never nag again.
+	if _, declined := os.Stat(watcherDeclinedMarker()); !launchd.WatcherInstalled() && declined != nil {
+		m.confirm = &confirmState{
+			prompt: "install the background watcher? it notifies failures while the TUI is closed (y/N)",
+			done:   "watcher installed & running — it now watches even when this TUI is closed",
+			run: func() error {
+				_, err := launchd.SetupWatcher()
+				return err
+			},
+			onCancel: func() {
+				os.MkdirAll(filepath.Dir(watcherDeclinedMarker()), 0o755)
+				os.WriteFile(watcherDeclinedMarker(), []byte("declined\n"), 0o644)
+			},
+		}
+	}
 	return m
+}
+
+// watcherAlive reports whether the watcher job is running, judged from the
+// already-scanned job list (no extra launchctl calls).
+func watcherAlive(jobs []launchd.Job) bool {
+	for _, j := range jobs {
+		if j.Label == launchd.WatcherLabel {
+			return j.Running()
+		}
+	}
+	return false
 }
 
 func (m Model) Init() tea.Cmd { return tea.Batch(refreshTick(), clockTick()) }
@@ -262,8 +346,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "ctrl+c":
 				return m, tea.Quit
 			default:
+				c := m.confirm
 				m.confirm = nil
 				m.status = dimStyle.Render("canceled")
+				if c.onCancel != nil {
+					c.onCancel()
+				}
 			}
 			return m, nil
 		}
@@ -481,12 +569,23 @@ func buildMenu(j launchd.Job) []menuEntry {
 	if !editForm.ok {
 		editForm.note = "user agents only"
 	}
+	truncEntry := menuEntry{id: actTruncate, label: "Truncate logs — keep last 1MB"}
+	switch total := jobLogSize(j); {
+	case !hasLogs:
+		truncEntry.note = "no log paths"
+	case total <= truncateMin:
+		truncEntry.note = fmt.Sprintf("only %s — nothing to trim", humanSize(total))
+	default:
+		truncEntry.label = fmt.Sprintf("Truncate logs — keep last 1MB (now %s)", humanSize(total))
+		truncEntry.ok = true
+	}
 	return []menuEntry{
 		runFollow,
 		{id: actRun, label: "Run now (stay here)", note: rootNote, ok: actionable},
 		toggle,
 		editForm,
 		del,
+		truncEntry,
 		follow,
 	}
 }
@@ -544,6 +643,12 @@ func (m Model) execMenu() (Model, tea.Cmd) {
 			prompt: fmt.Sprintf("delete %s? unloads it, moves plist + logs to Trash (y/N)", j.Label),
 			done:   "deleted (plist in Trash): " + j.Label,
 			run:    func() error { return launchd.Delete(j) },
+		}
+	case actTruncate:
+		m.confirm = &confirmState{
+			prompt: fmt.Sprintf("truncate logs of %s? keeps only the last 1MB (y/N)", j.Label),
+			done:   "logs truncated: " + j.Label,
+			run:    func() error { return launchd.TruncateLogs(j) },
 		}
 	case actEditForm:
 		return m.startEditForm(j)
@@ -637,9 +742,16 @@ func (m Model) rescan() Model {
 	}
 	m.power = power.Read()
 	if m.hist != nil {
-		for _, f := range m.hist.Observe(m.jobs) {
-			launchd.Notify("lazylaunchd", fmt.Sprintf("%s failed (exit %d)", f.Label, f.Exit))
-			m.status = errBanner.Render(fmt.Sprintf(" ✗ %s failed (exit %d) ", f.Label, f.Exit))
+		if watcherAlive(m.jobs) {
+			// The watcher owns observation and notifications; just read
+			// what it recorded and keep our snapshots current.
+			m.hist.Reload()
+			m.hist.Baseline(m.jobs)
+		} else {
+			for _, f := range m.hist.Observe(m.jobs) {
+				launchd.Notify("lazylaunchd", fmt.Sprintf("%s failed (exit %d)", f.Label, f.Exit))
+				m.status = errBanner.Render(fmt.Sprintf(" ✗ %s failed (exit %d) ", f.Label, f.Exit))
+			}
 		}
 	}
 	if m.cursor > len(m.visible()) {
@@ -681,7 +793,7 @@ func (m Model) menuPanel() string {
 	var b strings.Builder
 
 	b.WriteString(titleStyle.Render(j.Label) + "\n")
-	b.WriteString(dimStyle.Render(j.Kind.String()) + "  " + stateText(j) + "\n\n")
+	b.WriteString(dimStyle.Render(j.Kind.String()) + "  " + m.stateCell(j) + "\n\n")
 	b.WriteString(m.jobInfo(j) + "\n")
 
 	var items strings.Builder
@@ -816,7 +928,7 @@ func (m Model) list() string {
 			pad(trunc(j.Schedule, schedW), schedW),
 			pad(next, nextW),
 			m.histCell(j.Label),
-			stateText(j),
+			m.stateCell(j),
 		)
 		if r.job == target {
 			line = cursorStyle.Render("▸" + line[1:])
@@ -870,12 +982,23 @@ func (m Model) jobInfo(j launchd.Job) string {
 	} else if j.StateKnown {
 		field("History", dimStyle.Render("no runs observed yet — recorded while lazylaunchd is open"))
 	}
-	field("Stdout", shortenHome(j.StdoutPath))
-	field("Stderr", shortenHome(j.StderrPath))
+	field("Stdout", logPathWithSize(j.StdoutPath))
+	field("Stderr", logPathWithSize(j.StderrPath))
+	if due, ok := m.hist.Stale(j, time.Now()); ok {
+		field("Alert", warnStyle.Render(fmt.Sprintf("⚠ missed its %s run — was due but never observed", due.Format("15:04"))))
+	}
 	if j.ParseError != "" {
 		field("Error", errStyle.Render(j.ParseError))
 	}
 	return b.String()
+}
+
+// stateCell is stateText plus the missed-run alert, which outranks it.
+func (m Model) stateCell(j launchd.Job) string {
+	if due, ok := m.hist.Stale(j, time.Now()); ok {
+		return warnStyle.Render("⚠ missed " + due.Format("15:04"))
+	}
+	return stateText(j)
 }
 
 // histCell renders the last five observed runs, newest on the right.
@@ -920,7 +1043,7 @@ func (m Model) detail() string {
 	var b strings.Builder
 
 	b.WriteString(titleStyle.Render(j.Label) + "\n")
-	b.WriteString(dimStyle.Render(j.Kind.String()) + "  " + stateText(j) + "\n\n")
+	b.WriteString(dimStyle.Render(j.Kind.String()) + "  " + m.stateCell(j) + "\n\n")
 	b.WriteString(m.jobInfo(j))
 
 	if len(m.log) > 0 {

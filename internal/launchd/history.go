@@ -31,9 +31,10 @@ type snapshot struct {
 }
 
 type History struct {
-	path string
-	runs map[string][]Run
-	prev map[string]snapshot
+	path  string
+	runs  map[string][]Run
+	prev  map[string]snapshot
+	since time.Time // when this process started observing continuously
 }
 
 const historyCap = 20
@@ -44,20 +45,85 @@ func historyPath() string {
 }
 
 func LoadHistory() *History {
-	h := &History{path: historyPath(), runs: map[string][]Run{}, prev: map[string]snapshot{}}
+	h := &History{path: historyPath(), runs: map[string][]Run{}, prev: map[string]snapshot{}, since: time.Now()}
 	if data, err := os.ReadFile(h.path); err == nil {
 		json.Unmarshal(data, &h.runs)
 	}
+	// Test hook: pretend observation started earlier (undocumented).
+	if v := os.Getenv("LAZYLAUNCHD_SINCE"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			h.since = t
+		}
+	}
 	return h
+}
+
+// Stale reports whether the job missed its most recent due time on our
+// watch: due + grace has passed, we were already observing at the due
+// time, and no run was recorded at or after it.
+func (h *History) Stale(j Job, now time.Time) (time.Time, bool) {
+	const grace = 10 * time.Minute
+	due, ok := j.LastDue(now)
+	if !ok {
+		return time.Time{}, false
+	}
+	if now.Before(due.Add(grace)) {
+		return time.Time{}, false // still within grace
+	}
+	if due.Before(h.since) {
+		return time.Time{}, false // we weren't watching then; can't judge
+	}
+	for _, r := range h.runs[j.Label] {
+		if !r.At.Before(due.Add(-time.Minute)) {
+			return time.Time{}, false // it did run
+		}
+	}
+	return due, true
 }
 
 // Runs returns the recorded history for a label, oldest first.
 func (h *History) Runs(label string) []Run { return h.runs[label] }
 
+// save writes atomically (tmp + rename) — the TUI may read the file while
+// the watcher process is writing it.
 func (h *History) save() {
 	os.MkdirAll(filepath.Dir(h.path), 0o755)
-	if data, err := json.MarshalIndent(h.runs, "", " "); err == nil {
-		os.WriteFile(h.path, data, 0o644)
+	data, err := json.MarshalIndent(h.runs, "", " ")
+	if err != nil {
+		return
+	}
+	tmp := h.path + ".tmp"
+	if os.WriteFile(tmp, data, 0o644) == nil {
+		os.Rename(tmp, h.path)
+	}
+}
+
+// Reload re-reads runs recorded by another process (the watcher).
+func (h *History) Reload() {
+	data, err := os.ReadFile(h.path)
+	if err != nil {
+		return
+	}
+	var runs map[string][]Run
+	if json.Unmarshal(data, &runs) == nil {
+		h.runs = runs
+	}
+}
+
+// Baseline refreshes snapshots without recording anything — used while the
+// watcher owns observation, so a later takeover doesn't double-record.
+func (h *History) Baseline(jobs []Job) {
+	for _, j := range jobs {
+		if !j.StateKnown {
+			continue
+		}
+		var size int64
+		if j.StdoutPath != "" {
+			if fi, err := os.Stat(j.StdoutPath); err == nil {
+				size = fi.Size()
+			}
+		}
+		h.prev[j.Label] = snapshot{pid: j.PID, exit: j.LastExit, logSize: size}
 	}
 }
 

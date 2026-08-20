@@ -60,6 +60,24 @@ func (j Job) Running() bool { return j.StateKnown && j.PID > 0 }
 // whose next fire time launchd does not expose.
 func (j Job) IntervalBased() bool { return j.interval > 0 }
 
+// LastDue is the most recent calendar fire time at or before now — the
+// backward mirror of NextRun. False for non-calendar or unloaded jobs.
+func (j Job) LastDue(now time.Time) (time.Time, bool) {
+	if len(j.calendar) == 0 {
+		return time.Time{}, false
+	}
+	if j.StateKnown && !j.Loaded {
+		return time.Time{}, false
+	}
+	var best time.Time
+	for _, e := range j.calendar {
+		if t := prevCalendar(e, now); !t.IsZero() && t.After(best) {
+			best = t
+		}
+	}
+	return best, !best.IsZero()
+}
+
 // CommandSeed renders the job's program as a single editable string for
 // the edit form. Wizard-generated shapes collapse back to the bare path.
 func (j Job) CommandSeed() string {

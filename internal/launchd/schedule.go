@@ -197,6 +197,47 @@ func nextCalendar(e calEntry, now time.Time) time.Time {
 	return time.Time{}
 }
 
+// prevCalendar finds the most recent time matching the entry, at or before
+// now — the mirror of nextCalendar, used for missed-run detection.
+func prevCalendar(e calEntry, now time.Time) time.Time {
+	start := now.Truncate(time.Minute)
+	for d := 0; d < 400; d++ {
+		day := start.AddDate(0, 0, -d)
+		hFrom, mFrom := 23, 59
+		if d == 0 {
+			hFrom, mFrom = start.Hour(), start.Minute()
+		} else {
+			day = time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
+		}
+		if e.month >= 0 && int(day.Month()) != e.month {
+			continue
+		}
+		if e.day >= 0 && day.Day() != e.day {
+			continue
+		}
+		if e.weekday >= 0 && int(day.Weekday()) != e.weekday%7 {
+			continue
+		}
+		for h := hFrom; h >= 0; h-- {
+			if e.hour >= 0 && h != e.hour {
+				continue
+			}
+			to := 59
+			if h == hFrom && d == 0 {
+				to = mFrom
+			}
+			if e.minute >= 0 {
+				if e.minute <= to {
+					return time.Date(day.Year(), day.Month(), day.Day(), h, e.minute, 0, 0, day.Location())
+				}
+				continue
+			}
+			return time.Date(day.Year(), day.Month(), day.Day(), h, to, 0, 0, day.Location())
+		}
+	}
+	return time.Time{}
+}
+
 func weekdayName(wd int) string {
 	names := []string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
 	if wd >= 0 && wd < len(names) {

@@ -15,10 +15,12 @@ verdict, and every job row carries its own sleep-impact indicator:
 - `!` on battery — closing the lid stops scheduled runs
 - `·` not schedule-driven; sleep doesn't matter
 
-Each row also carries its last five observed runs (`··●●✗`, newest right), and a
-failed run posts a macOS notification. launchd keeps no run history itself, so
-lazylaunchd records what it observes while open
-(`~/Library/Application Support/lazylaunchd/history.json`).
+Each row also carries its last five observed runs (`··●●✗`, newest right). A failed
+run posts a macOS notification, and a scheduled job that silently skips its slot is
+flagged (`⚠ missed 17:00`) and notified too. launchd keeps no run history itself, so
+lazylaunchd records what it observes (`~/Library/Application Support/lazylaunchd/history.json`)
+— run `lazylaunchd setup` once and a background watcher (itself a launchd job,
+self-rotating logs) keeps observing and notifying even while the TUI is closed.
 
 ```
 lazylaunchd  ⚡ AC power · sleep prevented (caffeinate, powerd) — jobs run 24/7, even with the lid closed
@@ -36,6 +38,13 @@ enter actions (run/enable/disable) · d detail · j/k move · r refresh · q qui
 ```
 
 ## Install
+
+```sh
+brew install na2mene/tap/lazylaunchd
+lazylaunchd setup   # optional: background watcher (failure notifications while the TUI is closed)
+```
+
+Or with Go:
 
 ```sh
 go install github.com/na2mene/lazylaunchd@latest
@@ -98,6 +107,9 @@ belong to root.
 - [x] Per-job "survives lid close?" indicator
 - [x] Follow logs live
 - [x] Run history (●●✗) and failure notifications
+- [x] Background watcher (`lazylaunchd setup`) — notifies with the TUI closed
+- [x] Missed-run detection (scheduled but never ran)
+- [x] Oversized-log warning and one-key truncation
 - [x] Homebrew tap (`brew install na2mene/tap/lazylaunchd`)
 
 ## Name

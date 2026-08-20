@@ -32,6 +32,13 @@ brews:
     homepage: https://github.com/na2mene/lazylaunchd
     description: A lazygit-style TUI for macOS launchd
     license: MIT
+    caveats: |
+      To finish setup, run:
+        lazylaunchd setup
+      This installs the background watcher — it records run history and
+      sends a macOS notification when a job fails, even while the TUI
+      is closed. Re-run it after upgrades. Remove it anytime from the
+      TUI (Delete on com.lazylaunchd.watcher).
     install: |
       bin.install "lazylaunchd"
     test: |
