@@ -40,6 +40,7 @@ type Job struct {
 	Timed      bool   // has StartCalendarInterval or StartInterval
 	KeptAlive  bool   // has KeepAlive (bool true or conditional dict)
 	EnvPATH    string // EnvironmentVariables.PATH, if the plist sets one
+	WorkDir    string // WorkingDirectory, if the plist sets one
 
 	interval int        // StartInterval seconds
 	calendar []calEntry // parsed StartCalendarInterval

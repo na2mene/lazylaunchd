@@ -20,6 +20,7 @@ type rawPlist struct {
 	StandardOutPath       string            `plist:"StandardOutPath"`
 	StandardErrorPath     string            `plist:"StandardErrorPath"`
 	EnvironmentVariables  map[string]string `plist:"EnvironmentVariables"`
+	WorkingDirectory      string            `plist:"WorkingDirectory"`
 }
 
 // Scan reads every job definition from the standard launchd directories
@@ -104,5 +105,6 @@ func parse(path string, kind Kind) Job {
 	job.interval = raw.StartInterval
 	job.calendar = normalizeCalendar(raw.StartCalendarInterval)
 	job.EnvPATH = raw.EnvironmentVariables["PATH"]
+	job.WorkDir = raw.WorkingDirectory
 	return job
 }

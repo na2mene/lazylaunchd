@@ -129,6 +129,7 @@ const (
 	actRun
 	actToggle
 	actEditForm
+	actDuplicate
 	actDelete
 	actTruncate
 	actFollow
@@ -579,11 +580,16 @@ func buildMenu(j launchd.Job) []menuEntry {
 		truncEntry.label = fmt.Sprintf("Truncate logs — keep last 1MB (now %s)", humanSize(total))
 		truncEntry.ok = true
 	}
+	dup := menuEntry{id: actDuplicate, label: "Duplicate — new job based on this one", ok: len(j.Program) > 0}
+	if !dup.ok {
+		dup.note = "no program to copy"
+	}
 	return []menuEntry{
 		runFollow,
 		{id: actRun, label: "Run now (stay here)", note: rootNote, ok: actionable},
 		toggle,
 		editForm,
+		dup,
 		del,
 		truncEntry,
 		follow,
@@ -652,6 +658,8 @@ func (m Model) execMenu() (Model, tea.Cmd) {
 		}
 	case actEditForm:
 		return m.startEditForm(j)
+	case actDuplicate:
+		return m.startDuplicate(j)
 	case actFollow:
 		return m.startFollow(menuView)
 	}
@@ -955,6 +963,9 @@ func (m Model) jobInfo(j launchd.Job) string {
 	field("Program", trunc(strings.Join(j.Program, " "), m.width-14))
 	if j.EnvPATH != "" {
 		field("Env PATH", trunc(j.EnvPATH, max(20, m.width-14)))
+	}
+	if j.WorkDir != "" {
+		field("Workdir", shortenHome(j.WorkDir))
 	}
 	field("Schedule", j.Schedule)
 	if t, ok := j.NextRun(time.Now()); ok {

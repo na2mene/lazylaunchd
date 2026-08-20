@@ -24,6 +24,7 @@ const (
 	wSchedValue
 	wLogDir
 	wEnvPath
+	wWorkDir
 	wConfirm
 )
 
@@ -73,6 +74,11 @@ type wizard struct {
 	logDir      string
 	envPathRaw  string
 	envSeed     string
+	workDirRaw  string
+	workDir     string
+	workDirSeed string
+	progSeed    []string // exact args to keep when the command is untouched
+	progSeedRaw string
 	preview     string
 	errMsg      string
 	completions []string
@@ -119,9 +125,12 @@ func (w *wizard) prepInput() {
 	case wEnvPath:
 		w.input.Placeholder = defaultEnvPath
 		w.input.SetValue(w.envPathRaw)
+	case wWorkDir:
+		w.input.Placeholder = "~/path/to/dir (empty = launchd default /)"
+		w.input.SetValue(w.workDirRaw)
 	}
 	w.input.CursorEnd()
-	if w.step == wScript || w.step == wLogDir {
+	if w.step == wScript || w.step == wLogDir || w.step == wWorkDir {
 		w.completions = listCandidates(w.input.Value())
 	} else {
 		w.completions = nil
@@ -146,8 +155,10 @@ func (w *wizard) prevStep() int {
 		return wSchedType
 	case wEnvPath:
 		return wLogDir
-	case wConfirm:
+	case wWorkDir:
 		return wEnvPath
+	case wConfirm:
+		return wWorkDir
 	default:
 		return w.step - 1
 	}
@@ -315,6 +326,8 @@ func (w *wizard) newJob() launchd.NewJob {
 	}
 	nj.EnvPath = w.envPathRaw
 	nj.EnvPathSet = w.envPathRaw != w.envSeed
+	nj.WorkDir = w.workDir
+	nj.WorkDirSet = w.workDirRaw != w.workDirSeed
 	return nj
 }
 
@@ -322,6 +335,37 @@ func (m Model) startWizard() (Model, tea.Cmd) {
 	m.mode = wizardView
 	m.wiz = newWizard()
 	m.status = ""
+	return m, textinput.Blink
+}
+
+// startDuplicate opens the create wizard seeded from an existing job:
+// same command, schedule, PATH, and workdir — only the label needs a name.
+func (m Model) startDuplicate(j launchd.Job) (Model, tea.Cmd) {
+	m.mode = wizardView
+	m.status = ""
+	w := newWizard()
+	w.scriptRaw = j.CommandSeed()
+	w.progSeed = j.Program
+	w.progSeedRaw = w.scriptRaw
+	if kind, val, ok := j.EditSeed(); ok {
+		for i, opt := range schedOptions {
+			if opt.kind == kind {
+				w.schedSel = i
+			}
+		}
+		w.schedValRaw = val
+	}
+	w.envPathRaw = j.EnvPATH
+	w.workDirRaw = shortenHome(j.WorkDir)
+	suffix := j.Label
+	if strings.HasPrefix(suffix, w.prefix) {
+		suffix = strings.TrimPrefix(suffix, w.prefix)
+	} else if i := strings.LastIndex(suffix, "."); i >= 0 {
+		suffix = suffix[i+1:]
+	}
+	w.suffixRaw = suffix + "-copy"
+	w.prepInput()
+	m.wiz = w
 	return m, textinput.Blink
 }
 
@@ -352,6 +396,10 @@ func (m Model) startEditForm(j launchd.Job) (Model, tea.Cmd) {
 	// whatever the plist has now (possibly nothing).
 	w.envPathRaw = j.EnvPATH
 	w.envSeed = j.EnvPATH
+	w.workDirRaw = shortenHome(j.WorkDir)
+	w.workDirSeed = w.workDirRaw
+	w.progSeed = j.Program
+	w.progSeedRaw = j.CommandSeed()
 	w.prepInput()
 	m.wiz = w
 	return m, textinput.Blink
@@ -376,7 +424,7 @@ func (m Model) updateWizard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			return m.wizardEnter()
 		case "tab":
-			if w.step == wScript || w.step == wLogDir {
+			if w.step == wScript || w.step == wLogDir || w.step == wWorkDir {
 				val, _ := completePath(w.input.Value())
 				w.input.SetValue(val)
 				w.input.CursorEnd()
@@ -417,7 +465,7 @@ func (m Model) updateWizard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	w.input, cmd = w.input.Update(msg)
-	if w.step == wScript || w.step == wLogDir {
+	if w.step == wScript || w.step == wLogDir || w.step == wWorkDir {
 		w.completions = listCandidates(w.input.Value()) // live filter as you type
 	}
 	return m, cmd
@@ -435,9 +483,9 @@ func (m Model) wizardEnter() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch {
-		case w.editing && raw == w.orig.CommandSeed():
-			// Untouched: keep the exact original arguments.
-			w.program = w.orig.Program
+		case len(w.progSeed) > 0 && raw == w.progSeedRaw:
+			// Untouched: keep the exact seeded arguments (edit/duplicate).
+			w.program = w.progSeed
 		default:
 			path := expandTilde(raw)
 			// launchd starts jobs with CWD=/ — a relative path in the
@@ -454,7 +502,7 @@ func (m Model) wizardEnter() (tea.Model, tea.Cmd) {
 				w.program = []string{path}
 			case err == nil:
 				w.program = []string{"/bin/sh", path} // not executable: run through sh
-			case w.editing && strings.Contains(raw, " "):
+			case len(w.progSeed) > 0 && strings.Contains(raw, " "):
 				w.program = []string{"/bin/sh", "-c", raw} // free-form command
 			default:
 				w.errMsg = "file not found: " + path
@@ -519,6 +567,28 @@ func (m Model) wizardEnter() (tea.Model, tea.Cmd) {
 
 	case wEnvPath:
 		w.envPathRaw = strings.TrimSpace(w.input.Value())
+		w.step = wWorkDir
+		w.prepInput()
+
+	case wWorkDir:
+		raw := strings.TrimSpace(w.input.Value())
+		w.workDir = ""
+		if raw != "" {
+			p := expandTilde(raw)
+			if abs, err := filepath.Abs(p); err == nil {
+				p = abs
+			}
+			// Only a changed value must exist — an untouched seed passes
+			// through even if its directory has since vanished.
+			if raw != w.workDirSeed {
+				if info, err := os.Stat(p); err != nil || !info.IsDir() {
+					w.errMsg = "not a directory: " + p
+					return m, nil
+				}
+			}
+			w.workDir = p
+		}
+		w.workDirRaw = raw
 		var data []byte
 		var err error
 		if w.editing {
@@ -636,9 +706,9 @@ func (m Model) wizardView() string {
 	w := m.wiz
 	var b strings.Builder
 
-	title, total, stepNo := "New job", 7, w.step+1
+	title, total, stepNo := "New job", 8, w.step+1
 	if w.editing {
-		title, total = "Edit job", 6
+		title, total = "Edit job", 7
 		if w.step >= wSchedType {
 			stepNo = w.step // the label step is skipped
 		}
@@ -662,6 +732,11 @@ func (m Model) wizardView() string {
 			cur("PATH", trunc(w.orig.EnvPATH, max(20, m.width-14)))
 		} else {
 			cur("PATH", dimStyle.Render("— (launchd minimal PATH)"))
+		}
+		if w.orig.WorkDir != "" {
+			cur("Workdir", shortenHome(w.orig.WorkDir))
+		} else {
+			cur("Workdir", dimStyle.Render("— (/)"))
 		}
 		b.WriteString("\n")
 	}
@@ -692,6 +767,13 @@ func (m Model) wizardView() string {
 			v = "(none)"
 		}
 		done("PATH", trunc(v, max(20, m.width-14)))
+	}
+	if w.step > wWorkDir {
+		v := w.workDirRaw
+		if v == "" {
+			v = "(default /)"
+		}
+		done("Workdir", v)
 	}
 	if dn.Len() > 0 {
 		if w.editing {
@@ -742,6 +824,11 @@ func (m Model) wizardView() string {
 		b.WriteString(dimStyle.Render("launchd gives jobs a minimal PATH — Homebrew-installed tools are invisible without this.") + "\n\n")
 		b.WriteString("  " + w.input.View() + "\n")
 		b.WriteString(dimStyle.Render("  tab = insert recommended default · empty = no PATH override") + "\n")
+	case wWorkDir:
+		b.WriteString(sectionStyle.Render("Working directory") + "\n")
+		b.WriteString(dimStyle.Render("launchd starts jobs in / — scripts using relative paths break there.") + "\n\n")
+		b.WriteString("  " + w.input.View() + "\n")
+		b.WriteString(dimStyle.Render("  empty = launchd default (/)") + "\n")
 	case wConfirm:
 		verb := "written to"
 		opts := confirmOptions
@@ -776,7 +863,7 @@ func (m Model) wizardView() string {
 	}
 
 	help := "enter next · esc back"
-	if w.step == wScript || w.step == wLogDir {
+	if w.step == wScript || w.step == wLogDir || w.step == wWorkDir {
 		help = "tab complete path · enter next · esc back"
 	}
 	if w.step == wEnvPath {

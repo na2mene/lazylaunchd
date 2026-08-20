@@ -62,7 +62,7 @@ lazylaunchd --dump   # plain table, for scripts / grep
 | Key       | Action                                                        |
 |-----------|---------------------------------------------------------------|
 | `j` / `k` | move                                                          |
-| `enter`   | action menu: Run now & follow log / Run now / Enable / Disable / Edit / Delete / Detail / Follow |
+| `enter`   | job info + actions: Run now (& follow) / Enable / Disable / Edit / Duplicate / Delete / Truncate logs / Log |
 | `e`       | edit via form — the New-job wizard prefilled with current values |
 | `n`       | new-job wizard (also via the "+ New job" row at the top)      |
 | `d`       | job detail (program, schedule, log tail)                      |
@@ -110,6 +110,8 @@ belong to root.
 - [x] Background watcher (`lazylaunchd setup`) — notifies with the TUI closed
 - [x] Missed-run detection (scheduled but never ran)
 - [x] Oversized-log warning and one-key truncation
+- [x] WorkingDirectory step (launchd starts jobs in `/`)
+- [x] Duplicate — new job seeded from an existing one
 - [x] Homebrew tap (`brew install na2mene/tap/lazylaunchd`)
 
 ## Name

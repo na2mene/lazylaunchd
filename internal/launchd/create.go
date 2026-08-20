@@ -45,6 +45,11 @@ type NewJob struct {
 	// EnvPathSet marks whether an edit should touch the PATH at all.
 	EnvPath    string
 	EnvPathSet bool
+
+	// WorkDir is the job's WorkingDirectory — launchd defaults to /, where
+	// scripts doing relative-path I/O break. WorkDirSet mirrors EnvPathSet.
+	WorkDir    string
+	WorkDirSet bool
 }
 
 // PlistPath is where the job definition will be written.
@@ -67,6 +72,9 @@ func (n NewJob) BuildPlist() ([]byte, error) {
 	}
 	if n.EnvPath != "" {
 		d["EnvironmentVariables"] = map[string]interface{}{"PATH": n.EnvPath}
+	}
+	if n.WorkDir != "" {
+		d["WorkingDirectory"] = n.WorkDir
 	}
 	switch n.SchedKind {
 	case SchedHourly:
@@ -133,8 +141,16 @@ func BuildEditedPlist(originalPath string, n NewJob) ([]byte, error) {
 		delete(dict, k)
 	}
 	delete(newDict, "EnvironmentVariables") // handled key-by-key below
+	delete(newDict, "WorkingDirectory")     // only touched when the form changed it
 	for k, v := range newDict {
 		dict[k] = v
+	}
+	if n.WorkDirSet {
+		if n.WorkDir == "" {
+			delete(dict, "WorkingDirectory")
+		} else {
+			dict["WorkingDirectory"] = n.WorkDir
+		}
 	}
 	// PATH is edited surgically: other variables in an existing
 	// EnvironmentVariables dict must survive.
