@@ -22,10 +22,12 @@ type Run struct {
 	Dur int `json:"dur,omitempty"`
 }
 
-type Failure struct {
+// RunEvent is one newly observed run — success or failure — for the
+// Notifier to reason about.
+type RunEvent struct {
 	Label  string
 	Exit   int
-	Detail string // last log line, so the notification answers "why?"
+	Detail string // last log line on failure, so the notification answers "why?"
 }
 
 // lastLogLine pulls the job's most recent non-empty log line, preferring
@@ -105,22 +107,39 @@ func LoadHistory() *History {
 // time, and no run was recorded at or after it.
 func (h *History) Stale(j Job, now time.Time) (time.Time, bool) {
 	const grace = 10 * time.Minute
-	due, ok := j.LastDue(now)
-	if !ok {
-		return time.Time{}, false
-	}
-	if now.Before(due.Add(grace)) {
-		return time.Time{}, false // still within grace
-	}
-	if due.Before(h.since) {
-		return time.Time{}, false // we weren't watching then; can't judge
-	}
-	for _, r := range h.runs[j.Label] {
-		if !r.At.Before(due.Add(-time.Minute)) {
-			return time.Time{}, false // it did run
+
+	if due, ok := j.LastDue(now); ok { // calendar schedules: absolute due times
+		if now.Before(due.Add(grace)) {
+			return time.Time{}, false // still within grace
 		}
+		if due.Before(h.since) {
+			return time.Time{}, false // we weren't watching then; can't judge
+		}
+		for _, r := range h.runs[j.Label] {
+			if !r.At.Before(due.Add(-time.Minute)) {
+				return time.Time{}, false // it did run
+			}
+		}
+		return due, true
 	}
-	return due, true
+
+	// Interval timers have no absolute schedule, but the run history gives
+	// an anchor: the last observed run plus the interval.
+	if j.IntervalBased() && j.StateKnown && j.Loaded {
+		runs := h.runs[j.Label]
+		if len(runs) == 0 {
+			return time.Time{}, false // no anchor yet
+		}
+		expected := runs[len(runs)-1].At.Add(time.Duration(j.interval) * time.Second)
+		if now.Before(expected.Add(grace)) {
+			return time.Time{}, false
+		}
+		if expected.Before(h.since) {
+			return time.Time{}, false
+		}
+		return expected, true
+	}
+	return time.Time{}, false
 }
 
 // Runs returns the recorded history for a label, oldest first.
@@ -170,9 +189,9 @@ func (h *History) Baseline(jobs []Job) {
 }
 
 // Observe compares this poll against the previous one, records finished
-// runs, and returns newly observed failures.
-func (h *History) Observe(jobs []Job) []Failure {
-	var fails []Failure
+// runs, and returns every newly observed run as an event.
+func (h *History) Observe(jobs []Job) []RunEvent {
+	var events []RunEvent
 	changed := false
 	for _, j := range jobs {
 		if !j.StateKnown {
@@ -222,6 +241,12 @@ func (h *History) Observe(jobs []Job) []Failure {
 			ran = true // ran to completion between polls, same exit, log grew
 		}
 		if !ran {
+			if p.pid > 0 && j.PID == p.pid {
+				// Steady process across polls. Not a completed run (nothing
+				// recorded), but it lets the Notifier close out a failing
+				// streak — a stabilized KeepAlive job never "completes".
+				events = append(events, RunEvent{Label: j.Label, Exit: 0})
+			}
 			continue
 		}
 
@@ -230,14 +255,16 @@ func (h *History) Observe(jobs []Job) []Failure {
 			h.runs[j.Label] = h.runs[j.Label][n-historyCap:]
 		}
 		changed = true
+		detail := ""
 		if exit != 0 {
-			fails = append(fails, Failure{Label: j.Label, Exit: exit, Detail: lastLogLine(j)})
+			detail = lastLogLine(j)
 		}
+		events = append(events, RunEvent{Label: j.Label, Exit: exit, Detail: detail})
 	}
 	if changed {
 		h.save()
 	}
-	return fails
+	return events
 }
 
 // Notify posts a macOS notification, best effort.

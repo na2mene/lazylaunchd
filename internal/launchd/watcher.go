@@ -155,6 +155,7 @@ func Watch() error {
 	}
 
 	hist := LoadHistory()
+	notifier := NewNotifier()
 	notifiedStale := map[string]time.Time{} // label -> due already notified
 	for {
 		if fi, err := os.Stat(exePath); err == nil && !exeStamp.IsZero() && !fi.ModTime().Equal(exeStamp) {
@@ -162,15 +163,11 @@ func Watch() error {
 			os.Exit(0)
 		}
 		if jobs, err := Scan(); err == nil {
-			for _, f := range hist.Observe(jobs) {
-				msg := fmt.Sprintf("%s failed (exit %d)", f.Label, f.Exit)
-				if f.Detail != "" {
-					msg += ": " + f.Detail
-				}
-				Notify("lazylaunchd", msg)
-				lg.Printf("FAIL %s exit %d %s", f.Label, f.Exit, f.Detail)
-			}
 			now := time.Now()
+			for _, msg := range notifier.Process(hist.Observe(jobs), now) {
+				Notify("lazylaunchd", msg)
+				lg.Printf("NOTIFY %s", msg)
+			}
 			for _, j := range jobs {
 				if due, stale := hist.Stale(j, now); stale && !notifiedStale[j.Label].Equal(due) {
 					notifiedStale[j.Label] = due

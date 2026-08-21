@@ -225,6 +225,7 @@ type Model struct {
 	logGrep    bool   // typing the grep query right now
 	wiz        *wizard
 	hist       *launchd.History
+	notifier   *launchd.Notifier
 	filter     string
 	filtering  bool
 	sortNext   bool
@@ -285,7 +286,7 @@ func watcherDeclinedMarker() string {
 }
 
 func New(jobs []launchd.Job, pw power.Status) Model {
-	m := Model{jobs: jobs, power: pw, hist: launchd.LoadHistory()}
+	m := Model{jobs: jobs, power: pw, hist: launchd.LoadHistory(), notifier: launchd.NewNotifier()}
 	m.hist.Observe(jobs) // baseline snapshot
 
 	// First-run offer: one keypress sets up the background watcher.
@@ -866,13 +867,13 @@ func (m Model) rescan() Model {
 			m.hist.Reload()
 			m.hist.Baseline(m.jobs)
 		} else {
-			for _, f := range m.hist.Observe(m.jobs) {
-				msg := fmt.Sprintf("%s failed (exit %d)", f.Label, f.Exit)
-				if f.Detail != "" {
-					msg += ": " + f.Detail
-				}
+			for _, msg := range m.notifier.Process(m.hist.Observe(m.jobs), time.Now()) {
 				launchd.Notify("lazylaunchd", msg)
-				m.status = errBanner.Render(" ✗ " + msg + " ")
+				if strings.Contains(msg, "recovered") {
+					m.status = okBanner.Render(" ✓ " + msg + " ")
+				} else {
+					m.status = errBanner.Render(" ✗ " + msg + " ")
+				}
 			}
 		}
 	}
@@ -961,6 +962,12 @@ func (m Model) list() string {
 		errStyle.Render("!") + dimStyle.Render(" stops on battery lid-close") + "\n\n")
 
 	usedLines := 3 // title + legend + blank
+	if !watcherAlive(m.jobs) {
+		// The safety net is down — say so where it will be seen.
+		b.WriteString(warnStyle.Render("  ⚠ watcher off — failures go unnoticed while this TUI is closed") +
+			dimStyle.Render("  (t → Watcher to fix)") + "\n")
+		usedLines++
+	}
 	if m.filtering {
 		b.WriteString(confirmStyle.Render(" / "+m.filter+"▌ ") + helpStyle.Render("  type to filter · enter keep · esc clear") + "\n")
 		usedLines++

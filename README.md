@@ -22,6 +22,12 @@ lazylaunchd records what it observes (`~/Library/Application Support/lazylaunchd
 — run `lazylaunchd setup` once and a background watcher (itself a launchd job,
 self-rotating logs) keeps observing and notifying even while the TUI is closed.
 
+Notifications are polite: the first failure notifies immediately (with the job's
+last log line), a crash-looping KeepAlive job is summarized once per five minutes
+instead of every ~10s restart, and a recovery notice closes the loop when it comes
+back. Missed-run detection covers interval schedules too (anchored to the last
+observed run), and the list header warns when the watcher itself is off.
+
 Run durations (`● ok ~40s`) are measured by polling, so they are approximate —
 about ±10s under the watcher — and runs faster than one poll show no duration
 at all. If you need Jenkins-grade per-second timing, instrument the script itself.
