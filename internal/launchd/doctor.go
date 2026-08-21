@@ -2,12 +2,36 @@ package launchd
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/na2mene/lazylaunchd/internal/power"
 )
+
+// latestReleaseTag reads the tag from the releases/latest redirect — no
+// API, so no rate limits. Only called from doctor (an explicit action);
+// the tool never phones home on its own.
+func latestReleaseTag() string {
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Get("https://github.com/na2mene/lazylaunchd/releases/latest")
+	if err != nil {
+		return ""
+	}
+	resp.Body.Close()
+	loc := resp.Header.Get("Location")
+	if i := strings.LastIndex(loc, "/tag/"); i >= 0 {
+		return loc[i+5:]
+	}
+	return ""
+}
 
 // programTarget picks the file a job actually executes: the /bin/sh wrapper
 // target when present, the first argument otherwise ("" for sh -c commands).
@@ -27,7 +51,7 @@ func programTarget(prog []string) string {
 // Doctor runs a one-shot health check over every job definition and prints
 // a report. It returns hasErrors=true when something is actually broken
 // (warnings alone keep the exit code at zero).
-func Doctor() (string, bool) {
+func Doctor(currentVersion string) (string, bool) {
 	var b strings.Builder
 	errs, warns := 0, 0
 	bad := func(format string, args ...interface{}) {
@@ -113,7 +137,14 @@ func Doctor() (string, bool) {
 		warn("watcher not installed — failures go unnoticed while the TUI is closed. run: lazylaunchd setup")
 	}
 
-	fmt.Fprintf(&b, "%s\n\n", power.Read().Headline())
+	fmt.Fprintf(&b, "%s\n", power.Read().Headline())
+
+	if currentVersion != "" && currentVersion != "dev" {
+		if latest := latestReleaseTag(); latest != "" && latest != currentVersion {
+			fmt.Fprintf(&b, "⬆ %s available (you have %s) — brew upgrade lazylaunchd\n", latest, currentVersion)
+		}
+	}
+	fmt.Fprintf(&b, "\n")
 
 	switch {
 	case errs == 0 && warns == 0:

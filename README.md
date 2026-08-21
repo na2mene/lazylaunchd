@@ -22,6 +22,10 @@ lazylaunchd records what it observes (`~/Library/Application Support/lazylaunchd
 — run `lazylaunchd setup` once and a background watcher (itself a launchd job,
 self-rotating logs) keeps observing and notifying even while the TUI is closed.
 
+Run durations (`● ok ~40s`) are measured by polling, so they are approximate —
+about ±10s under the watcher — and runs faster than one poll show no duration
+at all. If you need Jenkins-grade per-second timing, instrument the script itself.
+
 ```
 lazylaunchd  ⚡ AC power · sleep prevented (caffeinate, powerd) — jobs run 24/7, even with the lid closed
 
@@ -58,6 +62,7 @@ lazylaunchd setup                 # install/update the background watcher
 lazylaunchd doctor                # health check (exit 1 when something is broken)
 lazylaunchd export > jobs.json    # all user agents as portable JSON ($HOME → ~)
 lazylaunchd import jobs.json      # write them back (skips existing; --load to start)
+lazylaunchd uninstall             # remove the watcher (--purge also removes history)
 lazylaunchd --dump                # plain table, for scripts / grep
 ```
 
@@ -74,12 +79,12 @@ job with the same label.
 
 | Key       | Action                                                        |
 |-----------|---------------------------------------------------------------|
-| `j` / `k` | move                                                          |
+| `↑`/`↓` (or `k`/`j`) | move                                               |
 | `enter`   | job info + actions: Run now (& follow) / Enable / Disable / Edit / Duplicate / Delete / Truncate logs / Log |
 | `e`       | edit via form — the New-job wizard prefilled with current values |
 | `n`       | new-job wizard (also via the "+ New job" row at the top)      |
 | `d`       | job detail (program, schedule, log tail)                      |
-| `f`       | follow log, tail -f style (`t` switches stdout/stderr)        |
+| `f`       | follow log, tail -f style — `j/k` scroll, `/` grep, `t` stdout/stderr |
 | `x`       | shortcut: run now (loads first if needed, then kickstarts)    |
 | `u`       | shortcut: enable / disable toggle — disable stays off across restarts |
 | `/`       | filter jobs by label (live, esc clears)                       |

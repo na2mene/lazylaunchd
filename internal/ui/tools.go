@@ -59,7 +59,7 @@ func (m Model) updateTools(key string) (Model, tea.Cmd) {
 			m.toolCands = listCandidates(m.toolInput.Value())
 			return m, textinput.Blink
 		case 2:
-			report, _ := launchd.Doctor()
+			report, _ := launchd.Doctor(Version)
 			return m.showReport("Doctor", report), nil
 		case 3:
 			msg, err := launchd.SetupWatcher()
@@ -214,7 +214,7 @@ func (m Model) toolsPanel() string {
 		}
 	}
 	b.WriteString("\n" + m.statusLine())
-	b.WriteString(helpStyle.Render("j/k move · enter select · esc back"))
+	b.WriteString(helpStyle.Render("↑↓ move · enter select · esc back"))
 	return b.String()
 }
 
@@ -243,6 +243,6 @@ func (m Model) toolReportPanel() string {
 	for _, l := range lines[from:to] {
 		b.WriteString(trunc(l, max(20, m.width-2)) + "\n")
 	}
-	b.WriteString("\n" + helpStyle.Render("j/k scroll · esc back"))
+	b.WriteString("\n" + helpStyle.Render("↑↓ scroll · esc back"))
 	return b.String()
 }

@@ -34,11 +34,15 @@ func main() {
 			fmt.Println(msg)
 			return
 		case "doctor":
-			report, hasErrors := launchd.Doctor()
+			report, hasErrors := launchd.Doctor(version)
 			fmt.Print(report)
 			if hasErrors {
 				os.Exit(1)
 			}
+			return
+		case "uninstall":
+			purge := len(os.Args) > 2 && os.Args[2] == "--purge"
+			fmt.Print(launchd.Uninstall(purge))
 			return
 		case "export":
 			data, _, err := launchd.ExportUserAgents()
@@ -88,6 +92,8 @@ func main() {
 		ui.Dump(os.Stdout, jobs, power.Read())
 		return
 	}
+
+	ui.Version = version
 
 	p := tea.NewProgram(ui.New(jobs, power.Read()), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {

@@ -17,6 +17,9 @@ import (
 	"github.com/na2mene/lazylaunchd/internal/power"
 )
 
+// Version is stamped by main so in-TUI tools (doctor) can report it.
+var Version = "dev"
+
 // tickMsg drives the background auto-refresh.
 type tickMsg struct{}
 
@@ -217,6 +220,9 @@ type Model struct {
 	logFrom    viewMode // where esc/q from the follow view returns to
 	logSize    int64
 	followSeq  int
+	logScroll  int    // lines scrolled up from the bottom (0 = following)
+	logQuery   string // grep filter over the tail buffer
+	logGrep    bool   // typing the grep query right now
 	wiz        *wizard
 	hist       *launchd.History
 	filter     string
@@ -382,11 +388,51 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateToolReport(msg.String())
 		}
 		if m.mode == logView {
+			if m.logGrep {
+				switch msg.String() {
+				case "ctrl+c":
+					return m, tea.Quit
+				case "esc":
+					m.logGrep = false
+					m.logQuery = ""
+				case "enter":
+					m.logGrep = false
+				case "backspace":
+					if len(m.logQuery) > 0 {
+						r := []rune(m.logQuery)
+						m.logQuery = string(r[:len(r)-1])
+					}
+				default:
+					if msg.Type == tea.KeyRunes {
+						m.logQuery += string(msg.Runes)
+					}
+				}
+				return m, nil
+			}
 			switch msg.String() {
 			case "ctrl+c":
 				return m, tea.Quit
-			case "esc", "q":
+			case "esc":
+				if m.logQuery != "" {
+					m.logQuery = ""
+					return m, nil
+				}
 				m.mode = m.logFrom
+			case "q":
+				m.mode = m.logFrom
+			case "/":
+				m.logGrep = true
+				m.logQuery = ""
+			case "k", "up":
+				m.logScroll++
+			case "j", "down":
+				if m.logScroll > 0 {
+					m.logScroll--
+				}
+			case "g":
+				m.logScroll = 1 << 20 // clamped to the top at render
+			case "G":
+				m.logScroll = 0
 			case "t":
 				if j, ok := m.curJob(); ok && j.StdoutPath != "" && j.StderrPath != "" && j.StdoutPath != j.StderrPath {
 					if m.logSrc == "stdout" {
@@ -395,6 +441,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.logSrc = "stdout"
 					}
 					m.logSize = -1
+					m.logScroll = 0
 					m = m.reloadFollow()
 				}
 			}
@@ -714,6 +761,9 @@ func (m Model) startFollow(from viewMode) (Model, tea.Cmd) {
 	m.mode = logView
 	m.logFrom = from
 	m.logSize = -1
+	m.logScroll = 0
+	m.logQuery = ""
+	m.logGrep = false
 	m.followSeq++
 	m = m.reloadFollow()
 	return m, followTick(m.followSeq)
@@ -750,26 +800,55 @@ func (m Model) logPanel() string {
 	if !ok {
 		return m.list()
 	}
-	var b strings.Builder
-	b.WriteString(titleStyle.Render(j.Label) + "  " + okStyle.Render("● following") + dimStyle.Render(" · "+m.logSrc+" · 0.5s") + "\n")
-	b.WriteString(dimStyle.Render(shortenHome(m.followPath())) + "\n")
-	b.WriteString(dimStyle.Render(strings.Repeat("─", max(10, m.width-2))) + "\n")
+	all := m.log
+	if m.logQuery != "" {
+		q := strings.ToLower(m.logQuery)
+		var f []string
+		for _, l := range all {
+			if strings.Contains(strings.ToLower(l), q) {
+				f = append(f, l)
+			}
+		}
+		all = f
+	}
 
 	avail := m.height - 5
+	if m.logGrep || m.logQuery != "" {
+		avail--
+	}
 	if avail < 3 {
 		avail = 3
 	}
-	lines := m.log
-	if len(lines) > avail {
-		lines = lines[len(lines)-avail:]
+	maxScroll := max(0, len(all)-avail)
+	off := clamp(m.logScroll, 0, maxScroll)
+
+	var b strings.Builder
+	state := okStyle.Render("● following")
+	if off > 0 {
+		state = warnStyle.Render("⏸ scrolled — G resumes")
 	}
-	if len(lines) == 0 {
-		b.WriteString(dimStyle.Render("(empty — waiting for output…)") + "\n")
+	b.WriteString(titleStyle.Render(j.Label) + "  " + state + dimStyle.Render(" · "+m.logSrc+" · 0.5s") + "\n")
+	b.WriteString(dimStyle.Render(shortenHome(m.followPath())) + "\n")
+	if m.logGrep {
+		b.WriteString(confirmStyle.Render(" / "+m.logQuery+"▌ ") + helpStyle.Render("  type to grep · enter keep · esc clear") + "\n")
+	} else if m.logQuery != "" {
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  grep: %s (%d lines) · esc clears", m.logQuery, len(all))) + "\n")
 	}
-	for _, l := range lines {
+	b.WriteString(dimStyle.Render(strings.Repeat("─", max(10, m.width-2))) + "\n")
+
+	start := maxScroll - off
+	end := min(len(all), start+avail)
+	if len(all) == 0 {
+		if m.logQuery != "" {
+			b.WriteString(dimStyle.Render("(no lines match)") + "\n")
+		} else {
+			b.WriteString(dimStyle.Render("(empty — waiting for output…)") + "\n")
+		}
+	}
+	for _, l := range all[start:end] {
 		b.WriteString(styleLogLine(l, m.width-1) + "\n")
 	}
-	b.WriteString("\n" + helpStyle.Render("t stdout/stderr · esc back"))
+	b.WriteString("\n" + helpStyle.Render("↑↓ scroll · g/G top/bottom · / grep · t stdout/stderr · esc back"))
 	return b.String()
 }
 
@@ -788,8 +867,12 @@ func (m Model) rescan() Model {
 			m.hist.Baseline(m.jobs)
 		} else {
 			for _, f := range m.hist.Observe(m.jobs) {
-				launchd.Notify("lazylaunchd", fmt.Sprintf("%s failed (exit %d)", f.Label, f.Exit))
-				m.status = errBanner.Render(fmt.Sprintf(" ✗ %s failed (exit %d) ", f.Label, f.Exit))
+				msg := fmt.Sprintf("%s failed (exit %d)", f.Label, f.Exit)
+				if f.Detail != "" {
+					msg += ": " + f.Detail
+				}
+				launchd.Notify("lazylaunchd", msg)
+				m.status = errBanner.Render(" ✗ " + msg + " ")
 			}
 		}
 	}
@@ -861,7 +944,7 @@ func (m Model) menuPanel() string {
 	b.WriteString(menuBox.Render(strings.TrimRight(items.String(), "\n")) + "\n")
 
 	b.WriteString("\n" + m.statusLine())
-	b.WriteString(helpStyle.Render("j/k move · enter select · esc cancel"))
+	b.WriteString(helpStyle.Render("↑↓ move · enter select · esc cancel"))
 	return b.String()
 }
 
@@ -984,7 +1067,7 @@ func (m Model) list() string {
 	}
 
 	b.WriteString("\n" + m.statusLine())
-	b.WriteString(helpStyle.Render("enter info & actions · n new · e edit · f log · / filter · s sort by next run · j/k · q quit"))
+	b.WriteString(helpStyle.Render("enter info & actions · n new · e edit · f log · / filter · s sort by next run · ↑↓ · q quit"))
 	return b.String()
 }
 
@@ -1025,6 +1108,10 @@ func (m Model) jobInfo(j launchd.Job) string {
 			mark := okStyle.Render("● ok")
 			if r.Exit != 0 {
 				mark = errStyle.Render(fmt.Sprintf("✗ exit %d", r.Exit))
+			}
+			if r.Dur > 0 {
+				// Poll-based measurement: honest about its granularity.
+				mark += dimStyle.Render(" ~" + fmtRunDur(r.Dur))
 			}
 			parts = append(parts, r.At.Format("01-02 15:04")+" "+mark)
 		}
@@ -1241,6 +1328,17 @@ func min64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+// fmtRunDur renders an observed runtime: 12s, 4m32s, 1h04m.
+func fmtRunDur(sec int) string {
+	switch {
+	case sec < 60:
+		return fmt.Sprintf("%ds", sec)
+	case sec < 3600:
+		return fmt.Sprintf("%dm%02ds", sec/60, sec%60)
+	}
+	return fmt.Sprintf("%dh%02dm", sec/3600, (sec%3600)/60)
 }
 
 // shortDur is a ticking countdown for the list column: 29:59, or 3:04:59

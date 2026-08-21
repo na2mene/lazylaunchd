@@ -870,7 +870,7 @@ func (m Model) wizardView() string {
 		help = "tab insert default · enter next · esc back"
 	}
 	if w.step == wSchedType || w.step == wConfirm {
-		help = "j/k move · enter select · esc back"
+		help = "↑↓ move · enter select · esc back"
 	}
 	b.WriteString("\n" + helpStyle.Render(help))
 	return b.String()

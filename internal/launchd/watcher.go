@@ -82,6 +82,33 @@ func SetupWatcher() (string, error) {
 		verb, nj.Program[0], path, filepath.Join(logDir, "watcher.log")), nil
 }
 
+// Uninstall removes the watcher job and, with purge, every trace of
+// lazylaunchd's own state. User jobs are never touched.
+func Uninstall(purge bool) string {
+	var b strings.Builder
+	_ = launchctl("bootout", guiDomain()+"/"+WatcherLabel)
+	_ = launchctl("enable", guiDomain()+"/"+WatcherLabel) // clear any override
+	path := NewJob{Label: WatcherLabel}.PlistPath()
+	if err := os.Remove(path); err == nil {
+		b.WriteString("watcher stopped and removed\n")
+	} else if os.IsNotExist(err) {
+		b.WriteString("watcher was not installed\n")
+	} else {
+		b.WriteString("watcher plist: " + err.Error() + "\n")
+	}
+	if purge {
+		home, _ := os.UserHomeDir()
+		os.RemoveAll(filepath.Join(home, "Library/Application Support/lazylaunchd"))
+		os.RemoveAll(watcherLogDir())
+		b.WriteString("history and watcher logs purged\n")
+	} else {
+		b.WriteString("history kept (add --purge to remove it)\n")
+	}
+	b.WriteString("your jobs in ~/Library/LaunchAgents are untouched\n")
+	b.WriteString("to remove the binary: brew uninstall lazylaunchd\n")
+	return b.String()
+}
+
 // rotatingLog is a size-capped, self-rotating log writer: when the file
 // exceeds cap it moves to <path>.1 (overwriting the previous generation),
 // so total disk use is bounded at 2×cap forever.
@@ -119,13 +146,29 @@ func Watch() error {
 	}
 	lg.Printf("watcher started (pid %d)", os.Getpid())
 
+	// Self-update: when brew upgrade (or a rebuild) replaces the binary,
+	// exit cleanly — KeepAlive restarts us as the new version.
+	exePath, _ := os.Executable()
+	var exeStamp time.Time
+	if fi, err := os.Stat(exePath); err == nil {
+		exeStamp = fi.ModTime()
+	}
+
 	hist := LoadHistory()
 	notifiedStale := map[string]time.Time{} // label -> due already notified
 	for {
+		if fi, err := os.Stat(exePath); err == nil && !exeStamp.IsZero() && !fi.ModTime().Equal(exeStamp) {
+			lg.Printf("binary updated — restarting as the new version")
+			os.Exit(0)
+		}
 		if jobs, err := Scan(); err == nil {
 			for _, f := range hist.Observe(jobs) {
-				Notify("lazylaunchd", fmt.Sprintf("%s failed (exit %d)", f.Label, f.Exit))
-				lg.Printf("FAIL %s exit %d", f.Label, f.Exit)
+				msg := fmt.Sprintf("%s failed (exit %d)", f.Label, f.Exit)
+				if f.Detail != "" {
+					msg += ": " + f.Detail
+				}
+				Notify("lazylaunchd", msg)
+				lg.Printf("FAIL %s exit %d %s", f.Label, f.Exit, f.Detail)
 			}
 			now := time.Now()
 			for _, j := range jobs {

@@ -17,17 +17,59 @@ import (
 type Run struct {
 	At   time.Time `json:"at"`
 	Exit int       `json:"exit"`
+	// Dur is the observed runtime in seconds (0 = finished between polls,
+	// too fast to measure). Accuracy is bounded by the poll interval.
+	Dur int `json:"dur,omitempty"`
 }
 
 type Failure struct {
-	Label string
-	Exit  int
+	Label  string
+	Exit   int
+	Detail string // last log line, so the notification answers "why?"
+}
+
+// lastLogLine pulls the job's most recent non-empty log line, preferring
+// stderr — that's usually where the reason lives.
+func lastLogLine(j Job) string {
+	for _, p := range []string{j.StderrPath, j.StdoutPath} {
+		if p == "" {
+			continue
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			continue
+		}
+		fi, err := f.Stat()
+		if err != nil || fi.Size() == 0 {
+			f.Close()
+			continue
+		}
+		const win = 4096
+		off, size := int64(0), fi.Size()
+		if size > win {
+			off, size = fi.Size()-win, win
+		}
+		buf := make([]byte, size)
+		f.ReadAt(buf, off)
+		f.Close()
+		lines := strings.Split(strings.TrimRight(string(buf), "\n"), "\n")
+		for i := len(lines) - 1; i >= 0; i-- {
+			if l := strings.TrimSpace(lines[i]); l != "" {
+				if len(l) > 120 {
+					l = l[:120] + "…"
+				}
+				return l
+			}
+		}
+	}
+	return ""
 }
 
 type snapshot struct {
-	pid     int
-	exit    *int
-	logSize int64
+	pid      int
+	exit     *int
+	logSize  int64
+	pidSince time.Time // when we first saw this PID
 }
 
 type History struct {
@@ -142,8 +184,16 @@ func (h *History) Observe(jobs []Job) []Failure {
 				size = fi.Size()
 			}
 		}
+		now := time.Now()
 		cur := snapshot{pid: j.PID, exit: j.LastExit, logSize: size}
 		p, had := h.prev[j.Label]
+		if j.PID > 0 {
+			if p.pid == j.PID {
+				cur.pidSince = p.pidSince // same process, keep its start
+			} else {
+				cur.pidSince = now
+			}
+		}
 		h.prev[j.Label] = cur
 		if !had {
 			continue // first sight: baseline only
@@ -154,11 +204,18 @@ func (h *History) Observe(jobs []Job) []Failure {
 			exit = *j.LastExit
 		}
 		ran := false
+		dur := 0
 		switch {
 		case p.pid > 0 && j.PID == 0:
 			ran = true // process finished
+			if !p.pidSince.IsZero() {
+				dur = int(now.Sub(p.pidSince).Seconds())
+			}
 		case p.pid > 0 && j.PID > 0 && p.pid != j.PID:
 			ran = true // keepalive process died and was restarted
+			if !p.pidSince.IsZero() {
+				dur = int(now.Sub(p.pidSince).Seconds())
+			}
 		case p.pid == 0 && j.PID == 0 && p.exit != nil && j.LastExit != nil && *p.exit != *j.LastExit:
 			ran = true // ran to completion between polls, exit changed
 		case p.pid == 0 && j.PID == 0 && size > p.logSize:
@@ -168,13 +225,13 @@ func (h *History) Observe(jobs []Job) []Failure {
 			continue
 		}
 
-		h.runs[j.Label] = append(h.runs[j.Label], Run{At: time.Now(), Exit: exit})
+		h.runs[j.Label] = append(h.runs[j.Label], Run{At: now, Exit: exit, Dur: dur})
 		if n := len(h.runs[j.Label]); n > historyCap {
 			h.runs[j.Label] = h.runs[j.Label][n-historyCap:]
 		}
 		changed = true
 		if exit != 0 {
-			fails = append(fails, Failure{Label: j.Label, Exit: exit})
+			fails = append(fails, Failure{Label: j.Label, Exit: exit, Detail: lastLogLine(j)})
 		}
 	}
 	if changed {
