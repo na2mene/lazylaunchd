@@ -834,7 +834,10 @@ func (m Model) wizardView() string {
 		opts := confirmOptions
 		if w.editing {
 			verb = "updated:"
-			opts = editConfirmOptions
+			opts = append([]string{}, editConfirmOptions...)
+			if w.orig.Running() {
+				opts[0] = "Save & apply — restarts the RUNNING process"
+			}
 		}
 		b.WriteString(sectionStyle.Render("Review — this will be "+verb+" "+shortenHome((launchd.NewJob{Label: w.label}).PlistPath())) + "\n\n")
 		b.WriteString(menuBox.Render(strings.TrimRight(w.preview, "\n")) + "\n\n")

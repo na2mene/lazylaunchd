@@ -153,6 +153,15 @@ func TruncateLogs(j Job) error {
 	return nil
 }
 
+// Restart kills the running process and starts it fresh — the way to make
+// a KeepAlive job pick up an edited script.
+func Restart(j Job) error {
+	if j.Kind == Daemon {
+		return fmt.Errorf("system daemons need root: sudo launchctl kickstart -k system/%s", j.Label)
+	}
+	return launchctl("kickstart", "-k", guiDomain()+"/"+j.Label)
+}
+
 // RunNow starts the job immediately, loading it first if needed.
 func RunNow(j Job) error {
 	if j.Kind == Daemon {

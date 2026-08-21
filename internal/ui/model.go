@@ -136,6 +136,7 @@ const (
 	actRunFollow = iota
 	actRun
 	actToggle
+	actRestart
 	actEditForm
 	actDuplicate
 	actDelete
@@ -601,8 +602,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case j.Kind == launchd.Daemon:
 					m.status = errStyle.Render("system daemons need root — use sudo launchctl")
 				case j.Loaded:
+					prompt := fmt.Sprintf("disable %s? stops it now and keeps it off after restarts (y/N)", j.Label)
+					if j.Running() {
+						prompt = fmt.Sprintf("%s is RUNNING (PID %d) — disabling terminates it mid-run. proceed? (y/N)", j.Label, j.PID)
+					}
 					m.confirm = &confirmState{
-						prompt: fmt.Sprintf("disable %s? stops it now and keeps it off after restarts (y/N)", j.Label),
+						prompt: prompt,
 						done:   "disabled: " + j.Label,
 						run:    func() error { return launchd.Unload(j) },
 					}
@@ -663,16 +668,26 @@ func buildMenu(j launchd.Job) []menuEntry {
 	if !dup.ok {
 		dup.note = "no program to copy"
 	}
-	return []menuEntry{
+	entries := []menuEntry{
 		runFollow,
 		{id: actRun, label: "Run now (stay here)", note: rootNote, ok: actionable},
 		toggle,
+	}
+	if j.Running() {
+		entries = append(entries, menuEntry{
+			id:    actRestart,
+			label: "Restart — kill & start fresh (picks up script changes)",
+			ok:    actionable,
+			note:  rootNote,
+		})
+	}
+	return append(entries,
 		editForm,
 		dup,
 		del,
 		truncEntry,
 		follow,
-	}
+	)
 }
 
 func (m Model) execMenu() (Model, tea.Cmd) {
@@ -708,6 +723,15 @@ func (m Model) execMenu() (Model, tea.Cmd) {
 		}
 		m = m.rescan()
 	case actToggle:
+		if j.Loaded && j.Running() {
+			// A live process is at stake — make that unmistakable.
+			m.confirm = &confirmState{
+				prompt: fmt.Sprintf("%s is RUNNING (PID %d) — disabling terminates it mid-run. proceed? (y/N)", j.Label, j.PID),
+				done:   "disabled (stays off after restart): " + j.Label,
+				run:    func() error { return launchd.Unload(j) },
+			}
+			return m, nil
+		}
 		m.mode = listView
 		var err error
 		verb := "enabled (runs at login again)"
@@ -723,9 +747,19 @@ func (m Model) execMenu() (Model, tea.Cmd) {
 			m.status = okBanner.Render(" ✓ " + verb + ": " + j.Label + " ")
 		}
 		m = m.rescan()
-	case actDelete:
+	case actRestart:
 		m.confirm = &confirmState{
-			prompt: fmt.Sprintf("delete %s? unloads it, moves plist + logs to Trash (y/N)", j.Label),
+			prompt: fmt.Sprintf("restart %s? kills the running process (PID %d) and starts it fresh (y/N)", j.Label, j.PID),
+			done:   "restarted: " + j.Label,
+			run:    func() error { return launchd.Restart(j) },
+		}
+	case actDelete:
+		prompt := fmt.Sprintf("delete %s? unloads it, moves plist + logs to Trash (y/N)", j.Label)
+		if j.Running() {
+			prompt = fmt.Sprintf("%s is RUNNING (PID %d) — delete terminates it mid-run, then moves plist + logs to Trash (y/N)", j.Label, j.PID)
+		}
+		m.confirm = &confirmState{
+			prompt: prompt,
 			done:   "deleted (plist in Trash): " + j.Label,
 			run:    func() error { return launchd.Delete(j) },
 		}
@@ -956,7 +990,7 @@ type row struct {
 
 func (m Model) list() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("lazylaunchd") + "  " + dimStyle.Render(m.power.Headline()) + "\n")
+	b.WriteString(titleStyle.Render("lazylaunchd") + dimStyle.Render(" "+Version) + "  " + dimStyle.Render(m.power.Headline()) + "\n")
 	b.WriteString(dimStyle.Render("  sleep: ") + okStyle.Render("✓") + dimStyle.Render(" runs 24/7 · ") +
 		warnStyle.Render("~") + dimStyle.Render(" skipped/paused while asleep · ") +
 		errStyle.Render("!") + dimStyle.Render(" stops on battery lid-close") + "\n\n")

@@ -86,7 +86,7 @@ job with the same label.
 | Key       | Action                                                        |
 |-----------|---------------------------------------------------------------|
 | `↑`/`↓` (or `k`/`j`) | move                                               |
-| `enter`   | job info + actions: Run now (& follow) / Enable / Disable / Edit / Duplicate / Delete / Truncate logs / Log |
+| `enter`   | job info + actions: Run now (& follow) / Enable / Disable / Restart / Edit / Duplicate / Delete / Truncate logs / Log |
 | `e`       | edit via form — the New-job wizard prefilled with current values |
 | `n`       | new-job wizard (also via the "+ New job" row at the top)      |
 | `d`       | job detail (program, schedule, log tail)                      |
@@ -117,7 +117,10 @@ alias lzl='lazylaunchd'
 - `pmset -g` — power source and sleep-prevention assertions
 
 Job control (`x` / `u`) uses `launchctl kickstart / bootstrap / bootout` on your own
-GUI domain. Disable also writes a persistent `launchctl disable` override, so a
+GUI domain. Disable, Restart, and Delete on a **running** job terminate its process
+(SIGTERM, then SIGKILL after ~20s) — the confirmation says so explicitly whenever a
+live process is at stake. Restart (shown only for running jobs) is how a KeepAlive
+job picks up an edited script. Disable also writes a persistent `launchctl disable` override, so a
 disabled job stays off across logins and reboots (plain bootout would resurrect it);
 Enable clears the override and bootstraps. System daemons stay read-only — they
 belong to root.
