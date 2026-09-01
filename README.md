@@ -5,6 +5,23 @@ A lazygit-style TUI for macOS `launchd`.
 See every launchd job on your Mac — what script it runs, on what schedule, whether it's
 actually running — without memorizing `launchctl` incantations or hand-reading plist XML.
 
+```
+lazylaunchd v1.0.0  ⚡ AC power · sleep prevented (caffeinate, powerd) — jobs run 24/7, even with the lid closed
+  sleep: ✓ runs 24/7 · ~ skipped/paused while asleep · ! stops on battery lid-close
+
+    + New job (n)    Search (/)    Sort: groups (s)    Tools (t)
+User Agents (3)
+▸ ✓ ● com.example.backup-hourly    every hour at :00      →15:00 (12m)  ··●●●  loaded
+  ✓ ● com.example.keepawake        always on (KeepAlive)                ●●●●●  running (PID 512)
+  ✓ ● com.example.nightly-sync     daily at 03:30         →03:30 (13h)  ●●✗✗●  loaded
+System Agents (1)
+  ✓ ○ com.example.updater          every 1h                             ·····  not loaded
+System Daemons (1)
+  ✓ ◌ com.example.checkin          every 15m                            ·····  system domain (root)
+
+enter info & actions · n new · e edit · f log · / filter · s sort by next run · ↑↓ · q quit
+```
+
 Built for people who run a Mac (or Mac mini) as an always-on box: AI agents, cron-like
 jobs, home servers. It answers the question that matters most for that setup:
 **"will my jobs keep running with the lid closed?"** — the header shows the machine-wide
@@ -26,26 +43,9 @@ Notifications are polite: the first failure notifies immediately (with the job's
 last log line), a crash-looping KeepAlive job is summarized once per five minutes
 instead of every ~10s restart, and a recovery notice closes the loop when it comes
 back. Missed-run detection covers interval schedules too (anchored to the last
-observed run), and the list header warns when the watcher itself is off.
-
-Run durations (`● ok ~40s`) are measured by polling, so they are approximate —
-about ±10s under the watcher — and runs faster than one poll show no duration
-at all. If you need Jenkins-grade per-second timing, instrument the script itself.
-
-```
-lazylaunchd  ⚡ AC power · sleep prevented (caffeinate, powerd) — jobs run 24/7, even with the lid closed
-
-User Agents (2)
-  ● com.example.agent-hourly     every hour at :00        loaded
-  ● com.example.keepawake        always on (KeepAlive)    running (PID 512)
-System Agents (2)
-  ● com.example.notifier         always on (KeepAlive)    running (PID 813)
-  ○ com.example.updater          every 1h                 not loaded
-System Daemons (1)
-  ◌ com.example.checkin          every 15m                system domain (root)
-
-enter actions (run/enable/disable) · d detail · j/k move · r refresh · q quit
-```
+observed run), and the list header warns when the watcher itself is off. In
+practice, the log line attached to the first notification is often enough to
+identify the cause without opening a log file.
 
 ## Install
 
@@ -125,24 +125,52 @@ disabled job stays off across logins and reboots (plain bootout would resurrect 
 Enable clears the override and bootstraps. System daemons stay read-only — they
 belong to root.
 
-## Roadmap
+## Features
 
-- [x] Run now / load / unload from the TUI
-- [x] New-job wizard: answer a few questions, get a valid plist, loaded
-- [x] PATH step — launchd's minimal PATH hides Homebrew tools ("works in
-      the terminal, fails under launchd"); the wizard writes
-      `EnvironmentVariables.PATH` so plain scripts just work
-- [x] Per-job "survives lid close?" indicator
-- [x] Follow logs live
-- [x] Run history (●●✗) and failure notifications
-- [x] Background watcher (`lazylaunchd setup`) — notifies with the TUI closed
-- [x] Missed-run detection (scheduled but never ran)
-- [x] Oversized-log warning and one-key truncation
-- [x] WorkingDirectory step (launchd starts jobs in `/`)
-- [x] Duplicate — new job seeded from an existing one
-- [x] Jobs as Code — `export` / `import` with `~`-portable paths
-- [x] `doctor` — one-shot health check for CI and setup validation
-- [x] Homebrew tap (`brew install na2mene/tap/lazylaunchd`)
+- Run now / enable / disable / restart / delete — every action from the TUI,
+  with an explicit confirmation whenever a live process is at stake
+- New-job wizard: answer a few questions, get a valid plist, loaded — including
+  a PATH step (launchd's minimal PATH hides Homebrew tools; the wizard writes
+  `EnvironmentVariables.PATH` so plain scripts just work) and a WorkingDirectory
+  step (launchd starts jobs in `/`)
+- Duplicate — a new job seeded from an existing one
+- Per-job "survives lid close?" indicator, machine-wide verdict in the header
+- Follow logs live, tail -f style, with grep and stdout/stderr toggle
+- Run history (`··●●✗`), failure & recovery notifications, missed-run detection
+- Background watcher (`lazylaunchd setup`) — notifies with the TUI closed
+- Oversized-log warning and one-key truncation
+- Jobs as Code — `export` / `import` with `~`-portable paths
+- `doctor` — one-shot health check for CI and setup validation
+- Homebrew tap (`brew install na2mene/tap/lazylaunchd`)
+
+## Stability
+
+v1.0.0 is a stability declaration — the parts you build muscle memory and
+scripts on are frozen for all of v1:
+
+- **Keybindings.** The keys in the table above keep their meanings.
+- **CLI subcommands.** `setup`, `doctor`, `export`, `import`, `uninstall` and
+  `--dump` stay backward-compatible; new subcommands and flags may be added.
+- **Export format.** `export` writes schema `"version": 1`, and every v1
+  release reads and writes it. An incompatible schema change would mean a new
+  schema version and a v2 of lazylaunchd.
+
+Colors, layout, exact wording, and the internal format of `history.json` are
+not part of the contract and may change in any release.
+
+## Known limitations
+
+- **Run history is observed, not instrumented.** launchd keeps no run history,
+  so lazylaunchd polls (about every 10s under the watcher) and records what it
+  sees. Durations (`● ok ~40s`) are approximate — about ±10s — and a run faster
+  than one polling interval is recorded without a duration. If you need
+  Jenkins-grade per-second timing, instrument the script itself.
+- **A handoff can drop one history entry.** Observation belongs to the watcher
+  while it runs and to the TUI otherwise; a run that starts *and* finishes
+  exactly while they swap can go unrecorded. That's one missing dot in the
+  history column — the job itself is unaffected.
+- **System daemons are read-only.** `/Library/LaunchDaemons` definitions are
+  listed, but their runtime state and control belong to root.
 
 ## Name
 
