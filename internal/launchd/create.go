@@ -28,17 +28,17 @@ func shq(s string) string {
 
 // NewJob describes a job the wizard wants to create.
 type NewJob struct {
-	Label      string
-	Program    []string
-	SchedKind  int
-	Minute     int // SchedHourly, SchedDaily, SchedWeekly, SchedOnce
-	Hour       int // SchedDaily, SchedWeekly, SchedOnce
-	Month      int // SchedOnce
-	Day        int // SchedOnce
-	Weekday    int // SchedWeekly (0=Sunday)
+	Label       string
+	Program     []string
+	SchedKind   int
+	Minute      int // SchedHourly, SchedDaily, SchedWeekly, SchedOnce
+	Hour        int // SchedDaily, SchedWeekly, SchedOnce
+	Month       int // SchedOnce
+	Day         int // SchedOnce
+	Weekday     int // SchedWeekly (0=Sunday)
 	IntervalMin int // SchedInterval
-	StdoutPath string
-	StderrPath string
+	StdoutPath  string
+	StderrPath  string
 
 	// EnvPath is written as EnvironmentVariables.PATH — launchd gives jobs
 	// a minimal PATH, so Homebrew-installed tools are invisible without it.

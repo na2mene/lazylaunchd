@@ -130,6 +130,7 @@ const (
 	toolImportView
 	toolExportView
 	toolReportView
+	boardView
 )
 
 const (
@@ -341,7 +342,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Refresh data only — never cursor, mode, or scroll — so navigation
 		// is unaffected. Paused while a menu, confirm, or the wizard is open:
 		// the job list must not shift under a pending selection.
-		if m.confirm == nil && (m.mode == listView || m.mode == detailView) {
+		if m.confirm == nil && (m.mode == listView || m.mode == detailView || m.mode == boardView) {
 			m = m.rescan()
 		}
 		return m, refreshTick()
@@ -493,7 +494,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.status = ""
+		if m.mode == boardView {
+			switch msg.String() {
+			case "b", "esc", "q":
+				m.mode = listView
+			case "/":
+				m.filtering = true
+				m.filter = ""
+				m.cursor = 0
+			case "r":
+				m = m.rescan()
+			case "ctrl+c":
+				return m, tea.Quit
+			}
+			return m, nil
+		}
 		switch msg.String() {
+		case "b":
+			if m.mode == listView {
+				m.mode = boardView
+			}
 		case "ctrl+c":
 			return m, tea.Quit
 		case "q":
@@ -928,6 +948,17 @@ func (m Model) View() string {
 		m.width, m.height = 80, 24
 	}
 	switch m.mode {
+	case boardView:
+		board := renderBoard(m.jobs, m.hist, m.filter, m.width, m.height, time.Now())
+		if m.filtering || m.confirm != nil {
+			lines := strings.Split(board, "\n")
+			lines[len(lines)-1] = confirmStyle.MaxWidth(m.width).Render(" / " + m.filter + "▌ ")
+			if m.confirm != nil {
+				lines[len(lines)-1] = confirmStyle.MaxWidth(m.width).Render(" " + m.confirm.prompt + " ")
+			}
+			return strings.Join(lines, "\n")
+		}
+		return board
 	case detailView:
 		return m.detail()
 	case menuView:
@@ -1181,10 +1212,14 @@ func (m Model) stateCell(j launchd.Job) string {
 
 // histCell renders the last five observed runs, newest on the right.
 func (m Model) histCell(label string) string {
-	if m.hist == nil {
+	return histCell(m.hist, label)
+}
+
+func histCell(hist *launchd.History, label string) string {
+	if hist == nil {
 		return strings.Repeat(" ", 5)
 	}
-	runs := m.hist.Runs(label)
+	runs := hist.Runs(label)
 	if len(runs) > 5 {
 		runs = runs[len(runs)-5:]
 	}

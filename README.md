@@ -64,6 +64,8 @@ go install github.com/na2mene/lazylaunchd@latest
 
 ```sh
 lazylaunchd                       # the TUI
+lazylaunchd board                 # worker seats, elapsed time, and recent runs
+lazylaunchd board --json          # board data as JSON, without the TUI
 lazylaunchd setup                 # install/update the background watcher
 lazylaunchd doctor                # health check (exit 1 when something is broken)
 lazylaunchd export > jobs.json    # all user agents as portable JSON ($HOME → ~)
@@ -95,6 +97,7 @@ job with the same label.
 | `u`       | shortcut: enable / disable toggle — disable stays off across restarts |
 | `/`       | filter jobs by label (live, esc clears)                       |
 | `s`       | toggle sort: grouped ⇄ by next run                            |
+| `b`       | toggle list ⇄ worker board (esc/q also return to the list)    |
 | `t`       | Tools: export / import / doctor / watcher setup, in the TUI   |
 | `r`       | refresh                                                       |
 | `esc`/`q` | back / quit                                                   |
@@ -137,6 +140,7 @@ belong to root.
 - Per-job "survives lid close?" indicator, machine-wide verdict in the header
 - Follow logs live, tail -f style, with grep and stdout/stderr toggle
 - Run history (`··●●✗`), failure & recovery notifications, missed-run detection
+- Worker board — loaded scheduled / KeepAlive user agents, elapsed time, and a merged run log
 - Background watcher (`lazylaunchd setup`) — notifies with the TUI closed
 - Oversized-log warning and one-key truncation
 - Jobs as Code — `export` / `import` with `~`-portable paths
@@ -158,6 +162,8 @@ scripts on are frozen for all of v1:
 Colors, layout, exact wording, and the internal format of `history.json` are
 not part of the contract and may change in any release.
 
+The `board --json` output is experimental and is not part of the v1 stability contract.
+
 ## Known limitations
 
 - **Run history is observed, not instrumented.** launchd keeps no run history,
@@ -165,6 +171,8 @@ not part of the contract and may change in any release.
   sees. Durations (`● ok ~40s`) are approximate — about ±10s — and a run faster
   than one polling interval is recorded without a duration. If you need
   Jenkins-grade per-second timing, instrument the script itself.
+  Board elapsed time starts when this TUI first observes the current PID;
+  it is not the process's launch time.
 - **A handoff can drop one history entry.** Observation belongs to the watcher
   while it runs and to the TUI otherwise; a run that starts *and* finishes
   exactly while they swap can go unrecorded. That's one missing dot in the
