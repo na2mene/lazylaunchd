@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -17,6 +19,35 @@ var version = "dev"
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "board":
+			flags := flag.NewFlagSet("board", flag.ExitOnError)
+			asJSON := flags.Bool("json", false, "print board data as JSON and exit (no TUI)")
+			flags.Parse(os.Args[2:])
+			if flags.NArg() != 0 {
+				fmt.Fprintln(os.Stderr, "usage: lazylaunchd board [--json]")
+				os.Exit(1)
+			}
+			jobs, err := launchd.Scan()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+			if *asJSON {
+				hist := launchd.LoadHistory()
+				hist.Baseline(jobs)
+				if err := json.NewEncoder(os.Stdout).Encode(ui.BuildBoard(jobs, hist, "", time.Now())); err != nil {
+					fmt.Fprintln(os.Stderr, "error:", err)
+					os.Exit(1)
+				}
+				return
+			}
+			ui.Version = version
+			p := tea.NewProgram(ui.NewBoard(jobs, power.Read()), tea.WithAltScreen())
+			if _, err := p.Run(); err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+			return
 		case "watch":
 			// Headless observer: records run history and notifies failures
 			// while the TUI is closed. Registered as a job by `setup`.

@@ -145,6 +145,12 @@ func (h *History) Stale(j Job, now time.Time) (time.Time, bool) {
 // Runs returns the recorded history for a label, oldest first.
 func (h *History) Runs(label string) []Run { return h.runs[label] }
 
+// RunningSince returns when this observer first saw the current process.
+func (h *History) RunningSince(label string) (time.Time, bool) {
+	p := h.prev[label]
+	return p.pidSince, p.pid > 0 && !p.pidSince.IsZero()
+}
+
 // save writes atomically (tmp + rename) — the TUI may read the file while
 // the watcher process is writing it.
 func (h *History) save() {
@@ -184,7 +190,16 @@ func (h *History) Baseline(jobs []Job) {
 				size = fi.Size()
 			}
 		}
-		h.prev[j.Label] = snapshot{pid: j.PID, exit: j.LastExit, logSize: size}
+		cur := snapshot{pid: j.PID, exit: j.LastExit, logSize: size}
+		if j.PID > 0 {
+			p := h.prev[j.Label]
+			if p.pid == j.PID && !p.pidSince.IsZero() {
+				cur.pidSince = p.pidSince
+			} else {
+				cur.pidSince = time.Now()
+			}
+		}
+		h.prev[j.Label] = cur
 	}
 }
 

@@ -10,13 +10,13 @@ import (
 )
 
 type rawPlist struct {
-	Label                 string      `plist:"Label"`
-	Program               string      `plist:"Program"`
-	ProgramArguments      []string    `plist:"ProgramArguments"`
-	StartInterval         int         `plist:"StartInterval"`
-	StartCalendarInterval interface{} `plist:"StartCalendarInterval"`
-	RunAtLoad             bool        `plist:"RunAtLoad"`
-	KeepAlive             interface{} `plist:"KeepAlive"`
+	Label                 string            `plist:"Label"`
+	Program               string            `plist:"Program"`
+	ProgramArguments      []string          `plist:"ProgramArguments"`
+	StartInterval         int               `plist:"StartInterval"`
+	StartCalendarInterval interface{}       `plist:"StartCalendarInterval"`
+	RunAtLoad             bool              `plist:"RunAtLoad"`
+	KeepAlive             interface{}       `plist:"KeepAlive"`
 	StandardOutPath       string            `plist:"StandardOutPath"`
 	StandardErrorPath     string            `plist:"StandardErrorPath"`
 	EnvironmentVariables  map[string]string `plist:"EnvironmentVariables"`
