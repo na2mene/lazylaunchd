@@ -103,9 +103,13 @@ func LoadHistory() *History {
 }
 
 // Stale reports whether the job missed its most recent due time on our
-// watch: due + grace has passed, we were already observing at the due
-// time, and no run was recorded at or after it.
+// watch: the job is not running, due + grace has passed, we were already
+// observing at the due time, and no run was recorded at or after it.
 func (h *History) Stale(j Job, now time.Time) (time.Time, bool) {
+	if j.Running() {
+		return time.Time{}, false // active runs are only recorded on completion
+	}
+
 	const grace = 10 * time.Minute
 
 	if due, ok := j.LastDue(now); ok { // calendar schedules: absolute due times
